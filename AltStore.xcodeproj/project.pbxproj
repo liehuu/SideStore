@@ -2413,6 +2413,13 @@
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		177EF33D2F4D8B8E008CAAE1 /* PBXFileSystemSynchronizedBuildFileExceptionSet */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				"NSAttributedString+Markdown.m",
+			);
+			target = BFD247692284B9A500981D42 /* SideStore */;
+		};
 		A8A5AFBE2F4C33A300572B4A /* PBXFileSystemSynchronizedBuildFileExceptionSet */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
@@ -2670,7 +2677,7 @@
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		A8A5AC9D2F4C338F00572B4A /* Roxas */ = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = Roxas; sourceTree = "<group>"; };
-		A8A5ACE42F4C339400572B4A /* MarkdownAttributedString */ = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = MarkdownAttributedString; sourceTree = "<group>"; };
+		A8A5ACE42F4C339400572B4A /* MarkdownAttributedString */ = {isa = PBXFileSystemSynchronizedRootGroup; exceptions = (177EF33D2F4D8B8E008CAAE1 /* PBXFileSystemSynchronizedBuildFileExceptionSet */, ); explicitFileTypes = {}; explicitFolders = (); path = MarkdownAttributedString; sourceTree = "<group>"; };
 		A8A5AE1B2F4C33A300572B4A /* libplist */ = {isa = PBXFileSystemSynchronizedRootGroup; exceptions = (A8A5AFC02F4C33A300572B4A /* PBXFileSystemSynchronizedBuildFileExceptionSet */, ); explicitFileTypes = {}; explicitFolders = (); path = libplist; sourceTree = "<group>"; };
 		A8A5AE662F4C33A300572B4A /* libimobiledevice-glue */ = {isa = PBXFileSystemSynchronizedRootGroup; exceptions = (A8A5AFBF2F4C33A300572B4A /* PBXFileSystemSynchronizedBuildFileExceptionSet */, ); explicitFileTypes = {}; explicitFolders = (); path = "libimobiledevice-glue"; sourceTree = "<group>"; };
 		A8A5AF5E2F4C33A300572B4A /* libimobiledevice */ = {isa = PBXFileSystemSynchronizedRootGroup; exceptions = (A8A5AFBE2F4C33A300572B4A /* PBXFileSystemSynchronizedBuildFileExceptionSet */, ); explicitFileTypes = {}; explicitFolders = (); path = libimobiledevice; sourceTree = "<group>"; };
