@@ -37,7 +37,8 @@ func installProvisioningProfiles(_ profileData: Data) throws {
     #if targetEnvironment(simulator)
     print("installProvisioningProfiles(\(profileData)) is no-op on simulator")
     #else
-    try minimuxer.install_provisioning_profile(profileData.toRustByteSlice().forRust())
+    let slice = profileData.toRustByteSlice()
+    try minimuxer.install_provisioning_profile(slice.forRust())
     #endif
 }
 
