@@ -2,7 +2,7 @@ name: Nightly SideStore Build
 
 on:
   push:
-    branches: [develop]
+    branches: [develop, LiveContainerSupport2]
   schedule:
     - cron: "0 0 * * *"
   workflow_dispatch:
@@ -30,17 +30,9 @@ jobs:
       # --------------------------------------------------
       # runtime env setup
       # --------------------------------------------------
-      - uses: actions/checkout@v4
-        with:
-          repository: "SideStore/beta-build-num"
-          ref: ${{ env.CHANNEL }}
-          token: ${{ secrets.CROSS_REPO_PUSH_KEY }}
-          path: "Dependencies/beta-build-num"
-          fetch-depth: 1
-
       - name: Setup Env
         run: |
-          BUILD_NUM=$(python3 scripts/ci/workflow.py reserve_build_number 'Dependencies/beta-build-num')
+          BUILD_NUM=123
           MARKETING_VERSION=$(python3 scripts/ci/workflow.py get-marketing-version)
           SHORT_COMMIT=$(python3 scripts/ci/workflow.py commid-id)
 
@@ -164,13 +156,6 @@ jobs:
           name: SideStore-${{ env.MARKETING_VERSION }}-dSYMs.zip
           path: SideStore.dSYMs.zip
 
-      - uses: actions/checkout@v4
-        with:
-          repository: "SideStore/apps-v2.json"
-          ref: "main"
-          token: ${{ secrets.CROSS_REPO_PUSH_KEY }}
-          path: "SideStore/apps-v2.json"
-
       # --------------------------------------------------
       # deploy
       # --------------------------------------------------
@@ -185,17 +170,6 @@ jobs:
 
           LAST_SUCCESSFUL_COMMIT=$(python3 scripts/ci/workflow.py last-successful-commit \
             "${{ github.workflow }}" "$CHANNEL")
-
-          python3 scripts/ci/workflow.py deploy \
-            SideStore/apps-v2.json \
-            "$SOURCE_JSON" \
-            "$CHANNEL" \
-            "$SHORT_COMMIT" \
-            "$MARKETING_VERSION" \
-            "$CHANNEL" \
-            "$BUNDLE_ID" \
-            "$IPA_NAME" \
-            "$LAST_SUCCESSFUL_COMMIT"
 
           RELEASE_NOTES=$(python3 scripts/ci/workflow.py retrieve-release-notes "$CHANNEL")
 
