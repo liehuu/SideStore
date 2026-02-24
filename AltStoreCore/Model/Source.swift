@@ -28,9 +28,9 @@ public extension Source
     #else
     
     #if ALPHA
-    static let altStoreSourceURL = URL(string: "https://sidestore.io/apps-v2.json/")!
+    static let altStoreSourceURL = URL(string: "https://github.com/LiveContainer/LiveContainer/releases/download/1.0/apps_ss_lc.json")!
     #else
-    static let altStoreSourceURL = URL(string: "https://sidestore.io/apps-v2.json/")!
+    static let altStoreSourceURL = URL(string: "https://github.com/LiveContainer/LiveContainer/releases/download/1.0/apps_ss_lc.json")!
     #endif
     
     #endif

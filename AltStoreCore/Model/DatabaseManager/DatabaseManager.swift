@@ -358,7 +358,7 @@ private extension DatabaseManager
         
         let context = self.persistentContainer.newBackgroundContext()
         context.performAndWait {
-            guard let localApp = ALTApplication(fileURL: Bundle.main.bundleURL) else { return }
+            guard let localApp = ALTApplication(fileURL: Bundle.realMainBundle.bundleURL) else { return }
             
             let altStoreSource: Source
             
@@ -403,7 +403,7 @@ private extension DatabaseManager
                 // figure out if the current AltStoreApp is signed with "Use Main Profie" option
                 // by checking if the first extension's entitlement's application-identifier matches current one
                 repeat {
-                    guard let pluginURL = Bundle.main.builtInPlugInsURL else {
+                    guard let pluginURL = Bundle.realMainBundle.builtInPlugInsURL else {
                         installedApp.useMainProfile = true
                         break
                     }
@@ -424,7 +424,7 @@ private extension DatabaseManager
                         break
                     }
                     
-                    if appId.hasSuffix(Bundle.main.bundleIdentifier!) {
+                    if appId.hasSuffix(Bundle.realMainBundle.bundleIdentifier!) {
                         installedApp.useMainProfile = true
                     } else {
                         installedApp.useMainProfile = false
@@ -485,7 +485,7 @@ private extension DatabaseManager
                 FileManager.default.prepareTemporaryURL() { (temporaryFileURL) in
                     do
                     {
-                        try FileManager.default.copyItem(at: Bundle.main.bundleURL, to: temporaryFileURL)
+                        try FileManager.default.copyItem(at: Bundle.realMainBundle.bundleURL, to: temporaryFileURL)
                         
                         guard let appBundle = Bundle(url: temporaryFileURL) else { throw ALTError(.invalidApp) }
                         try update(appBundle, bundleID: StoreApp.altstoreAppID)

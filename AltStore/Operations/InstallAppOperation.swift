@@ -175,7 +175,7 @@ final class InstallAppOperation: ResultOperation<InstalledApp>
             }
             
             var installing = true
-            if installedApp.storeApp?.bundleIdentifier.range(of: Bundle.Info.appbundleIdentifier) != nil {
+            if installedApp.bundleIdentifier.range(of: Bundle.Info.appbundleIdentifier) != nil {
                 do {
                     // we need to flush changes to the disk now in case the changes are lost when iOS kills current process
                     try installedApp.managedObjectContext?.save()

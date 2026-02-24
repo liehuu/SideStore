@@ -178,6 +178,9 @@ class SourceDetailViewController: HeaderContentViewController<SourceHeaderView, 
             
             let title: String
             
+            // temporarily fix crash on source view
+            self.viewModel.isSourceAdded = nil
+            
             switch self.viewModel.isSourceAdded
             {
             case true?:

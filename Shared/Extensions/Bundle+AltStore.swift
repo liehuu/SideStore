@@ -19,7 +19,15 @@ public extension Bundle
         public static let altBundleID = "ALTBundleIdentifier"
 
         public static let orgbundleIdentifier =  "com.SideStore"
-        public static let appbundleIdentifier =  orgbundleIdentifier + ".SideStore"
+        public static var appbundleIdentifier : String {
+            get {
+                if Bundle.isBundledWithLiveContainer {
+                    return "com.kdt.livecontainer"
+                } else {
+                    return orgbundleIdentifier + ".SideStore"
+                }
+            }
+        }
         public static let devicePairingString = "ALTPairingFile"
         public static let urlTypes = "CFBundleURLTypes"
         public static let exportedUTIs = "UTExportedTypeDeclarations"
@@ -57,14 +65,33 @@ public extension Bundle
 
 public extension Bundle
 {
-    static var baseAltStoreAppGroupID = "group." + Bundle.Info.appbundleIdentifier
+    static var baseAltStoreAppGroupID = "group.com.SideStore.SideStore"
+    static var isBundledWithLiveContainer = Bundle.main.bundleURL.lastPathComponent == "SideStoreApp.framework" || Bundle.main.bundleURL.lastPathComponent == "LiveWidgetExtension.appex"
+    static var cachedAltStoreAppGroup: String? = nil
 
     var appGroups: [String] {
         return self.infoDictionary?[Bundle.Info.appGroups] as? [String] ?? []
     }
     
-    var altstoreAppGroup: String? {        
+    static var lcBundle: Bundle? {
+        return Bundle(url: Bundle.main.bundleURL.deletingLastPathComponent().deletingLastPathComponent())
+    }
+    
+    static var realMainBundle: Bundle {
+        (Bundle.isBundledWithLiveContainer ? Bundle.lcBundle ?? Bundle.main : Bundle.main)
+    }
+    
+    var altstoreAppGroup: String? {
+        if let cached = Bundle.cachedAltStoreAppGroup {
+            return cached
+        }
+        if Bundle.isBundledWithLiveContainer, let lcBundle = Bundle.lcBundle {
+            let ans = lcBundle.appGroups.first { $0.contains("group.com.SideStore.SideStore") }
+            Bundle.cachedAltStoreAppGroup = ans
+            return ans
+        }
         let appGroup = self.appGroups.first { $0.contains(Bundle.baseAltStoreAppGroupID) }
+        Bundle.cachedAltStoreAppGroup = appGroup
         return appGroup
     }
     

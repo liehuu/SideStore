@@ -2669,6 +2669,7 @@
 /* End PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
+		177EB19D2F4D48B9008CAAE1 /* LiveContainerSupport */ = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = LiveContainerSupport; sourceTree = "<group>"; };
 		A8A5AC9D2F4C338F00572B4A /* Roxas */ = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = Roxas; sourceTree = "<group>"; };
 		A8A5ACE42F4C339400572B4A /* MarkdownAttributedString */ = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = MarkdownAttributedString; sourceTree = "<group>"; };
 		A8A5AE1B2F4C33A300572B4A /* libplist */ = {isa = PBXFileSystemSynchronizedRootGroup; exceptions = (A8A5AFC02F4C33A300572B4A /* PBXFileSystemSynchronizedBuildFileExceptionSet */, ); explicitFileTypes = {}; explicitFolders = (); path = libplist; sourceTree = "<group>"; };
@@ -4285,6 +4286,7 @@
 		BFD247612284B9A500981D42 = {
 			isa = PBXGroup;
 			children = (
+				177EB19D2F4D48B9008CAAE1 /* LiveContainerSupport */,
 				A8EEC3D92F4B0FC800F2436D /* AltBackup */,
 				A8EEC8412F4B146A00F2436D /* AltStore */,
 				A8EEC0502F4AF7FB00F2436D /* AltStoreCore */,
@@ -4492,6 +4494,7 @@
 				A85A51592F4B48DE002E2E11 /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
+				177EB19D2F4D48B9008CAAE1 /* LiveContainerSupport */,
 				A8A5AFC32F4C33D800572B4A /* libcurl */,
 				A8EEC8412F4B146A00F2436D /* AltStore */,
 			);
