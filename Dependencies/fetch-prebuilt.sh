@@ -10,17 +10,9 @@ elif [[ -d "/usr/local" ]]; then
     export PATH="/usr/local/bin:$PATH"
 fi
 
-# Check if wget and curl are installed; if not, install them via Homebrew
-if ! command -v wget &> /dev/null; then
-    echo "wget not found, attempting to install via Homebrew..."
-    if command -v brew &> /dev/null; then
-        brew install wget
-    else
-        echo "Homebrew is not installed. Please install Homebrew and rerun the script."
-        exit 1
-    fi
-fi
-
+# Check if curl is installed; if not, install it via Homebrew
+# (wget is no longer used: downloads go through curl -fL, which fails
+# cleanly on HTTP errors instead of saving the error page as a .a file)
 if ! command -v curl &> /dev/null; then
     echo "curl not found, attempting to install via Homebrew..."
     if command -v brew &> /dev/null; then
@@ -30,6 +22,29 @@ if ! command -v curl &> /dev/null; then
         exit 1
     fi
 fi
+
+# Download a URL to a local path with curl (-f: HTTP errors fail instead of
+# saving the error page; -L: follow GitHub release redirects; --retry for flaky
+# networks), then sanity-check the result so a bad download fails THIS step
+# loudly instead of breaking libtool later with a cryptic error.
+fetch_prebuilt() {
+    local DST="$1"
+    local URL="$2"
+    local MIN_BYTES="${3:-1000}"
+    rm -f "$DST"
+    if ! curl -fL --retry 3 --retry-delay 2 --max-time 600 -o "$DST" "$URL"; then
+        echo "ERROR: failed to download $URL -> $DST"
+        rm -f "$DST"
+        exit 1
+    fi
+    local SIZE=$(wc -c < "$DST" | tr -d ' ')
+    if [ "$SIZE" -lt "$MIN_BYTES" ]; then
+        echo "ERROR: $DST is only $SIZE bytes (expected >= $MIN_BYTES) - download corrupt?"
+        rm -f "$DST"
+        exit 1
+    fi
+    echo "OK: $DST ($SIZE bytes)"
+}
 
 check_for_update() {
     # em_proxy's "latest" release was repackaged as an .xcframework.zip and no longer
@@ -84,15 +99,15 @@ check_for_update() {
             echo "downloading binaries"
             echo
             if [[ "$1" != "minimuxer" ]]; then
-                wget -L -O "$1/lib$1-sim.a"    "https://github.com/SideStore/$1/releases/$REF/download/lib$1-sim.a"
-                wget -L -O "$1/lib$1-ios.a"    "https://github.com/SideStore/$1/releases/$REF/download/lib$1-ios.a"
-                wget -L -O "$1/$1.h"           "https://github.com/SideStore/$1/releases/$REF/download/$1.h"
-                wget -L -O "$1/$1.swift"       "https://github.com/SideStore/$1/releases/$REF/download/$1.swift"
+                fetch_prebuilt "$1/lib$1-sim.a"  "https://github.com/SideStore/$1/releases/download/$REF/lib$1-sim.a" 100000
+                fetch_prebuilt "$1/lib$1-ios.a"  "https://github.com/SideStore/$1/releases/download/$REF/lib$1-ios.a" 100000
+                fetch_prebuilt "$1/$1.h"         "https://github.com/SideStore/$1/releases/download/$REF/$1.h" 100
+                fetch_prebuilt "$1/$1.swift"     "https://github.com/SideStore/$1/releases/download/$REF/$1.swift" 100
                 echo
             else
-                wget -L -O "$1/lib$1-sim.a"    "https://github.com/SideStore/$1/releases/$REF/download/lib$1-sim.a"
-                wget -L -O "$1/lib$1-ios.a"    "https://github.com/SideStore/$1/releases/$REF/download/lib$1-ios.a"
-                wget -L -O "$1/generated.zip"  "https://github.com/SideStore/$1/releases/$REF/download/generated.zip"
+                fetch_prebuilt "$1/lib$1-sim.a"  "https://github.com/SideStore/$1/releases/download/$REF/lib$1-sim.a" 100000
+                fetch_prebuilt "$1/lib$1-ios.a"  "https://github.com/SideStore/$1/releases/download/$REF/lib$1-ios.a" 100000
+                fetch_prebuilt "$1/generated.zip" "https://github.com/SideStore/$1/releases/download/$REF/generated.zip" 1000
                 echo
                 echo "Unzipping generated.zip"
                 cd "$1"
