@@ -224,9 +224,11 @@ extension FetchProvisioningProfilesOperation
 
                 let updatedParentBundleID: String
 
-                if app.isAltStoreApp
+                if effectiveParentBundleID.hasPrefix("com.rileytestut.AltStore")
                 {
                     // Use com.<TEAMID>.<originalBundleID> format for AltStore (and its extensions) by default.
+                    // Note: isAltStoreApp is NOT used here because inside LiveContainer it matches
+                    // only com.kdt.livecontainer.*, so AltStore itself would fall into the else branch.
                     updatedParentBundleID = "com." + team.identifier + "." + effectiveParentBundleID
                 }
                 else
