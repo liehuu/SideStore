@@ -141,32 +141,33 @@ def clean_spm_cache():
 
 def build():
     run("mkdir -p build/logs")
-    # Workaround: three dependencies (CodeSignKit / GSACryptoKit /
-    # RemotePairingKit) each declare the *same* OpenSSL binary target with the
-    # same URL, so SwiftPM races three downloads into one cache slot keyed by
-    # "package name + last URL path component". The losers hit
-    # "already exists in file system" (Apple FB10471859), and SwiftPM's own
-    # downloader additionally truncates this 43MB archive on CI (#6635) ->
-    # "invalid archive returned from <url>". `curl` fetches it intact, so we
-    # pre-place the ARCHIVE into SwiftPM's artifact cache (plus an extracted
-    # copy) so xcodebuild finds it already present and never downloads it.
+    # The OpenSSL binary target is declared identically by three dependencies
+    # (CodeSignKit / GSACryptoKit / RemotePairingKit), and xcodebuild stages it
+    # in BOTH places: ~/Library/Caches/org.swift.swiftpm/artifacts *and*
+    # DerivedData/<proj>/SourcePackages/artifacts/<pkg>/<file> (FB10471859).
+    # nightly.yml caches all of DerivedData, so a half-downloaded archive kept
+    # getting restored from the Actions cache on every single run -> the endless
+    # "already exists in file system" / "invalid archive returned from <url>"
+    # loop (SwiftPM #6635). Only ever wiping the first location was the bug.
+    # We deliberately do NOT pre-seed: a file already sitting at the target path
+    # is exactly what trips the error, so let SwiftPM fetch it cleanly itself.
     run(
         """
-        OPENSSL_URL='https://github.com/krzyzanowskim/OpenSSL/releases/download/3.6.2000/OpenSSL.xcframework.zip'
-        ART_DIR="$HOME/Library/Caches/org.swift.swiftpm/artifacts/https___github_com_krzyzanowskim_OpenSSL_releases_download_3_6_2000_OpenSSL_xcframework_zip"
         git config --global --unset-all url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf || true
-        rm -rf "$ART_DIR"
-        mkdir -p "$ART_DIR"
-        TMP_ZIP="$(mktemp -t openssl.XXXXXX).zip"
-        if curl -fSL --retry 5 --retry-delay 5 -o "$TMP_ZIP" "$OPENSSL_URL"; then
-          cp "$TMP_ZIP" "$ART_DIR/OpenSSL.xcframework.zip"
-          unzip -o -q "$TMP_ZIP" -d "$ART_DIR"
-          echo "seeded OpenSSL archive + extracted copy into $ART_DIR"
-        else
-          echo "WARNING: could not pre-fetch OpenSSL archive; xcodebuild will try its own download"
-        fi
-        rm -f "$TMP_ZIP"
-        echo "OpenSSL seed step done"
+        # BOTH binary-artifact locations must go:
+        #  1) the shared SwiftPM cache
+        #  2) Xcode's DerivedData .../SourcePackages/artifacts/<pkg>/<file> -- this is
+        #     where xcodebuild actually stages binary targets (see Nutrient's write-up of
+        #     FB10471859). nightly.yml caches all of ~/Library/Developer/Xcode/DerivedData,
+        #     so a half-downloaded OpenSSL.xcframework.zip kept getting restored from the
+        #     Actions cache on every run no matter how often we wiped location (1).
+        # We do NOT pre-seed anything: a file already sitting at that path is exactly what
+        # trips "already exists in file system", so let SwiftPM fetch it cleanly itself.
+        rm -rf "$HOME/Library/Caches/org.swift.swiftpm/artifacts"
+        find "$HOME/Library/Developer/Xcode/DerivedData" \\
+             -maxdepth 4 -type d -path '*/SourcePackages/artifacts' \\
+             -prune -exec rm -rf {} + 2>/dev/null || true
+        echo "cleared SwiftPM cache + DerivedData SourcePackages/artifacts"
         """
     )
     run(
