@@ -141,6 +141,11 @@ def clean_spm_cache():
 
 def build():
     run("mkdir -p build/logs")
+    # Workaround: GitHub Actions cache may restore a stale/incomplete SwiftPM
+    # binary-artifact dir (e.g. OpenSSL.xcframework). SwiftPM refuses to
+    # re-download when the destination already exists on disk -> fatalError
+    # "already exists in file system". Nuke the artifact cache so it fetches fresh.
+    run("rm -rf ~/Library/Caches/org.swift.swiftpm/artifacts")
     run(
         "set -o pipefail && "
         "NSUnbufferedIO=YES make -B build "
