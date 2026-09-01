@@ -142,7 +142,11 @@ extension AppManager
                     }
                     
                     let uti = UTTypeCopyDeclaration(app.installedAppUTI as CFString)?.takeRetainedValue() as NSDictionary?
-                    if uti == nil && !legacySideloadedApps.contains(app.bundleIdentifier)
+                    // Dual-store co-management: if AltStore refreshed this app last, only
+                    // io.altstore.Installed.* is declared. Treat the app as still installed
+                    // as long as either store's UTI is declared by some app on this device.
+                    let altstoreUTI = UTTypeCopyDeclaration(app.altstoreInstalledAppUTI as CFString)?.takeRetainedValue() as NSDictionary?
+                    if uti == nil && altstoreUTI == nil && !legacySideloadedApps.contains(app.bundleIdentifier)
                     {
                         // This UTI is not declared by any apps, which means this app has been deleted by the user.
                         // This app is also not a legacy sideloaded app, so we can assume it's fine to delete it.

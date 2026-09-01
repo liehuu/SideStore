@@ -462,6 +462,15 @@ public extension InstalledApp
         return installedAppUTI
     }
     
+    /// UTI marker used by upstream AltStore (io.altstore.Installed.<bundleID>).
+    /// Declaring it alongside our own lets both SideStore and AltStore track the same app
+    /// without fighting over ownership when either one refreshes it.
+    class func altstoreInstalledAppUTI(forBundleIdentifier bundleIdentifier: String) -> String
+    {
+        let altstoreInstalledAppUTI = "io.altstore.Installed." + bundleIdentifier
+        return altstoreInstalledAppUTI
+    }
+    
     class func installedBackupAppUTI(forBundleIdentifier bundleIdentifier: String) -> String
     {
         let installedBackupAppUTI = InstalledApp.installedAppUTI(forBundleIdentifier: bundleIdentifier) + ".backup"
@@ -488,6 +497,10 @@ public extension InstalledApp
     
     var installedAppUTI: String {
         return InstalledApp.installedAppUTI(forBundleIdentifier: self.resignedBundleIdentifier)
+    }
+    
+    var altstoreInstalledAppUTI: String {
+        return InstalledApp.altstoreInstalledAppUTI(forBundleIdentifier: self.resignedBundleIdentifier)
     }
     
     var installedBackupAppUTI: String {

@@ -163,8 +163,18 @@ private extension ResignAppOperation
                                    "UTTypeIdentifier": InstalledApp.installedAppUTI(forBundleIdentifier: profile.bundleIdentifier),
                                    "UTTypeTagSpecification": [:]] as [String : Any]
             
+            // Dual-store co-management: also declare AltStore's installed-app UTI so that
+            // upstream AltStore keeps tracking (and can refresh) this app after SideStore
+            // installs or refreshes it. Whoever refreshes last, both stores stay in sync.
+            let altstoreInstalledAppUTI = ["UTTypeConformsTo": [],
+                                           "UTTypeDescription": "AltStore Installed App",
+                                           "UTTypeIconFiles": [],
+                                           "UTTypeIdentifier": InstalledApp.altstoreInstalledAppUTI(forBundleIdentifier: profile.bundleIdentifier),
+                                           "UTTypeTagSpecification": [:]] as [String : Any]
+            
             var exportedUTIs = infoDictionary[Bundle.Info.exportedUTIs] as? [[String: Any]] ?? []
             exportedUTIs.append(installedAppUTI)
+            exportedUTIs.append(altstoreInstalledAppUTI)
             infoDictionary[Bundle.Info.exportedUTIs] = exportedUTIs
             
             try (infoDictionary as NSDictionary).write(to: bundle.infoPlistURL)
