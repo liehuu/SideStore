@@ -32,6 +32,14 @@ if ! command -v curl &> /dev/null; then
 fi
 
 check_for_update() {
+    # em_proxy's "latest" release was repackaged as an .xcframework.zip and no longer
+    # ships the per-arch static libs (libem_proxy-ios.a / .h / .swift) that this 0.6.3
+    # Xcode project expects. Pin em_proxy to the rolling "build" tag, which still ships
+    # the legacy .a + header layout. minimuxer keeps using "latest" (its latest is the
+    # "build" tag and still has the .a files).
+    local REF="latest"
+    if [ "$1" = "em_proxy" ]; then REF="build"; fi
+
     if [ -f ".skip-prebuilt-fetch-$1" ]; then
         echo "Skipping prebuilt fetch for $1 since .skip-prebuilt-fetch-$1 exists. If you are developing $1 alongside SideStore, don't remove this file, or this script will replace your locally built binaries with the ones built by GitHub Actions."
         return
@@ -58,7 +66,7 @@ check_for_update() {
     if [ "$FORCE_DOWNLOAD" = true ] || [[ $LAST_FETCH -lt $(expr $(date +%s) - 3600) ]] || [[ "$2" == "force" ]]; then
         echo "Checking $1 for update"
         echo
-        LATEST_COMMIT=`curl https://api.github.com/repos/SideStore/$1/releases/latest | perl -n -e '/Commit: https:\\/\\/github\\.com\\/[^\\/]*\\/[^\\/]*\\/commit\\/([^"]*)/ && print $1'`
+        LATEST_COMMIT=`curl -L "https://api.github.com/repos/SideStore/$1/releases/$REF" | perl -n -e '/Commit: https:\\/\\/github\\.com\\/[^\\/]*\\/[^\\/]*\\/commit\\/([^"]*)/ && print $1'`
         echo
         echo "Last commit: $LAST_COMMIT"
         echo "Latest commit: $LATEST_COMMIT"
@@ -76,15 +84,15 @@ check_for_update() {
             echo "downloading binaries"
             echo
             if [[ "$1" != "minimuxer" ]]; then
-                wget -O "$1/lib$1-sim.a"    "https://github.com/SideStore/$1/releases/latest/download/lib$1-sim.a"
-                wget -O "$1/lib$1-ios.a"    "https://github.com/SideStore/$1/releases/latest/download/lib$1-ios.a"
-                wget -O "$1/$1.h"           "https://github.com/SideStore/$1/releases/latest/download/$1.h"
-                wget -O "$1/$1.swift"       "https://github.com/SideStore/$1/releases/latest/download/$1.swift"
+                wget -L -O "$1/lib$1-sim.a"    "https://github.com/SideStore/$1/releases/$REF/download/lib$1-sim.a"
+                wget -L -O "$1/lib$1-ios.a"    "https://github.com/SideStore/$1/releases/$REF/download/lib$1-ios.a"
+                wget -L -O "$1/$1.h"           "https://github.com/SideStore/$1/releases/$REF/download/$1.h"
+                wget -L -O "$1/$1.swift"       "https://github.com/SideStore/$1/releases/$REF/download/$1.swift"
                 echo
             else
-                wget -O "$1/lib$1-sim.a"    "https://github.com/SideStore/$1/releases/latest/download/lib$1-sim.a"
-                wget -O "$1/lib$1-ios.a"    "https://github.com/SideStore/$1/releases/latest/download/lib$1-ios.a"
-                wget -O "$1/generated.zip"  "https://github.com/SideStore/$1/releases/latest/download/generated.zip"
+                wget -L -O "$1/lib$1-sim.a"    "https://github.com/SideStore/$1/releases/$REF/download/lib$1-sim.a"
+                wget -L -O "$1/lib$1-ios.a"    "https://github.com/SideStore/$1/releases/$REF/download/lib$1-ios.a"
+                wget -L -O "$1/generated.zip"  "https://github.com/SideStore/$1/releases/$REF/download/generated.zip"
                 echo
                 echo "Unzipping generated.zip"
                 cd "$1"
