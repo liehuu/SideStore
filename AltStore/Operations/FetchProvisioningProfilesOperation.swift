@@ -226,8 +226,8 @@ extension FetchProvisioningProfilesOperation
 
                 if app.isAltStoreApp
                 {
-                    // Use legacy bundle ID format for AltStore (and its extensions).
-                    updatedParentBundleID = effectiveParentBundleID + "." + team.identifier // Append just team identifier to make it harder to track.
+                    // Use com.<TEAMID>.<originalBundleID> format for AltStore (and its extensions) by default.
+                    updatedParentBundleID = "com." + team.identifier + "." + effectiveParentBundleID
                 }
                 else
                 {
