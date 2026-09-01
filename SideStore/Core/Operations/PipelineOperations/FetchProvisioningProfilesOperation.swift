@@ -152,7 +152,13 @@ class FetchProvisioningProfilesOperation: BasePipelineOperation<InstallAppOperat
         } else {
             let parentBundleID = parentAppBundle?.bundleIdentifier ?? targetAppBundle.bundleIdentifier
             let effectiveParentBundleID = self.context.targetBundleIdentifier
-            let updatedParentBundleID = self.context.appendTeamID ? (effectiveParentBundleID + "." + team.identifier) : effectiveParentBundleID
+            let updatedParentBundleID: String
+            if targetAppBundle.isAltStoreApp && self.context.customBundleIdentifier == nil {
+                // AltStore: always use com.<TEAMID>.<originalBundleID> format by default.
+                updatedParentBundleID = "com." + team.identifier + "." + effectiveParentBundleID
+            } else {
+                updatedParentBundleID = self.context.appendTeamID ? (effectiveParentBundleID + "." + team.identifier) : effectiveParentBundleID
+            }
 
             if parentAppBundle != nil,
                targetAppBundle.bundleIdentifier.hasPrefix(parentBundleID + ".") {
