@@ -130,6 +130,12 @@ jobs:
           mkdir -p build/logs
           python3 scripts/ci/workflow.py boot-sim-async "iPhone 17 Pro"
 
+      - name: Authenticate GitHub Package Fetches
+        if: steps.build_gate.outputs.should_skip != 'true'
+        run: |
+          git config --global url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf "https://github.com/"
+          git config --global url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf "git@github.com:"
+
       - name: Build
         if: steps.build_gate.outputs.should_skip != 'true'
         id: build
