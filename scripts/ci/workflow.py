@@ -141,11 +141,36 @@ def clean_spm_cache():
 
 def build():
     run("mkdir -p build/logs")
-    # Workaround: GitHub Actions cache may restore a stale/incomplete SwiftPM
-    # binary-artifact dir (e.g. OpenSSL.xcframework). SwiftPM refuses to
-    # re-download when the destination already exists on disk -> fatalError
-    # "already exists in file system". Nuke the artifact cache so it fetches fresh.
-    run("rm -rf ~/Library/Caches/org.swift.swiftpm/artifacts")
+    # Workaround: SwiftPM's own downloader fails to fetch the OpenSSL binary
+    # .xcframework from GitHub releases. It does an *unauthenticated* download
+    # (the GH_TOKEN is only wired into `git` via insteadOf, not SwiftPM's HTTP
+    # client), so on a shared runner IP it gets rate-limited / flakes, leaves a
+    # half-written artifact dir behind, and then refuses to overwrite it with
+    # "already exists in file system" -> fatalError, looping forever.
+    # Pre-fetch it ourselves with curl (authenticated via GH_TOKEN, retried) and
+    # seed SwiftPM's artifact cache so xcodebuild skips the broken download.
+    run(
+        """
+        OPENSSL_URL='https://github.com/krzyzanowskim/OpenSSL/releases/download/3.6.2000/OpenSSL.xcframework.zip'
+        ART_DIR="$HOME/Library/Caches/org.swift.swiftpm/artifacts/https___github_com_krzyzanowskim_OpenSSL_releases_download_3_6_2000_OpenSSL_xcframework_zip"
+        rm -rf "$ART_DIR"
+        mkdir -p "$ART_DIR"
+        TMP_ZIP="$(mktemp -t openssl.XXXXXX).zip"
+        if curl -fSL --retry 5 --retry-delay 5 -o "$TMP_ZIP" "$OPENSSL_URL"; then
+          echo "seeded OpenSSL via direct release URL"
+          unzip -o -q "$TMP_ZIP" -d "$ART_DIR"
+        elif [ -n "$GH_TOKEN" ]; then
+          echo "direct download failed, retrying via GitHub API with token"
+          ASSET_ID=$(curl -sL -H "Authorization: Bearer $GH_TOKEN" "https://api.github.com/repos/krzyzanowskim/OpenSSL/releases/tags/3.6.2000" | python3 -c "import sys,json; d=json.load(sys.stdin); ids=[x['id'] for x in d.get('assets',[]) if x['name']=='OpenSSL.xcframework.zip']; print(ids[0] if ids else '')")
+          if [ -n "$ASSET_ID" ]; then
+            curl -fSL --retry 5 --retry-delay 5 -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/octet-stream" -o "$TMP_ZIP" "https://api.github.com/repos/krzyzanowskim/OpenSSL/releases/assets/$ASSET_ID"
+            unzip -o -q "$TMP_ZIP" -d "$ART_DIR"
+          fi
+        fi
+        rm -f "$TMP_ZIP"
+        echo "OpenSSL seed step done (artifact dir: $ART_DIR)"
+        """
+    )
     run(
         "set -o pipefail && "
         "NSUnbufferedIO=YES make -B build "
