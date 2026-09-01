@@ -55,6 +55,17 @@ check_for_update() {
     local REF="latest"
     if [ "$1" = "em_proxy" ]; then REF="build"; fi
 
+    # URL forms differ between "latest" and a concrete tag:
+    #   latest endpoint:  releases/latest/download/<file>          (NOT releases/download/latest/...)
+    #   tag endpoint:     releases/download/<tag>/<file>
+    # The API check mirrors this: releases/latest vs releases/tags/<tag>.
+    local DL_BASE="https://github.com/SideStore/$1/releases/latest/download"
+    local API_URL="https://api.github.com/repos/SideStore/$1/releases/latest"
+    if [ "$REF" != "latest" ]; then
+        DL_BASE="https://github.com/SideStore/$1/releases/download/$REF"
+        API_URL="https://api.github.com/repos/SideStore/$1/releases/tags/$REF"
+    fi
+
     if [ -f ".skip-prebuilt-fetch-$1" ]; then
         echo "Skipping prebuilt fetch for $1 since .skip-prebuilt-fetch-$1 exists. If you are developing $1 alongside SideStore, don't remove this file, or this script will replace your locally built binaries with the ones built by GitHub Actions."
         return
@@ -81,7 +92,7 @@ check_for_update() {
     if [ "$FORCE_DOWNLOAD" = true ] || [[ $LAST_FETCH -lt $(expr $(date +%s) - 3600) ]] || [[ "$2" == "force" ]]; then
         echo "Checking $1 for update"
         echo
-        LATEST_COMMIT=`curl -L "https://api.github.com/repos/SideStore/$1/releases/$REF" | perl -n -e '/Commit: https:\\/\\/github\\.com\\/[^\\/]*\\/[^\\/]*\\/commit\\/([^"]*)/ && print $1'`
+        LATEST_COMMIT=`curl -L "$API_URL" | perl -n -e '/Commit: https:\\/\\/github\\.com\\/[^\\/]*\\/[^\\/]*\\/commit\\/([^"]*)/ && print $1'`
         echo
         echo "Last commit: $LAST_COMMIT"
         echo "Latest commit: $LATEST_COMMIT"
@@ -99,15 +110,15 @@ check_for_update() {
             echo "downloading binaries"
             echo
             if [[ "$1" != "minimuxer" ]]; then
-                fetch_prebuilt "$1/lib$1-sim.a"  "https://github.com/SideStore/$1/releases/download/$REF/lib$1-sim.a" 100000
-                fetch_prebuilt "$1/lib$1-ios.a"  "https://github.com/SideStore/$1/releases/download/$REF/lib$1-ios.a" 100000
-                fetch_prebuilt "$1/$1.h"         "https://github.com/SideStore/$1/releases/download/$REF/$1.h" 100
-                fetch_prebuilt "$1/$1.swift"     "https://github.com/SideStore/$1/releases/download/$REF/$1.swift" 100
+                fetch_prebuilt "$1/lib$1-sim.a"  "$DL_BASE/lib$1-sim.a" 100000
+                fetch_prebuilt "$1/lib$1-ios.a"  "$DL_BASE/lib$1-ios.a" 100000
+                fetch_prebuilt "$1/$1.h"         "$DL_BASE/$1.h" 100
+                fetch_prebuilt "$1/$1.swift"     "$DL_BASE/$1.swift" 100
                 echo
             else
-                fetch_prebuilt "$1/lib$1-sim.a"  "https://github.com/SideStore/$1/releases/download/$REF/lib$1-sim.a" 100000
-                fetch_prebuilt "$1/lib$1-ios.a"  "https://github.com/SideStore/$1/releases/download/$REF/lib$1-ios.a" 100000
-                fetch_prebuilt "$1/generated.zip" "https://github.com/SideStore/$1/releases/download/$REF/generated.zip" 1000
+                fetch_prebuilt "$1/lib$1-sim.a"  "$DL_BASE/lib$1-sim.a" 100000
+                fetch_prebuilt "$1/lib$1-ios.a"  "$DL_BASE/lib$1-ios.a" 100000
+                fetch_prebuilt "$1/generated.zip" "$DL_BASE/generated.zip" 1000
                 echo
                 echo "Unzipping generated.zip"
                 cd "$1"
