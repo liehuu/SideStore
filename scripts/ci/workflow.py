@@ -144,7 +144,7 @@ def build():
     run(
         "set -o pipefail && "
         "NSUnbufferedIO=YES make -B build "
-        "2>&1 | tee -a build/logs/build.log | xcbeautify --renderer github-actions"
+        "2>&1 | tee -a build/logs/build.log"
     )
     run("make fakesign | tee -a build/logs/build.log")
     run("make ipa | tee -a build/logs/build.log")
