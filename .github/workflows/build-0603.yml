@@ -22,6 +22,8 @@ concurrency:
 jobs:
   build:
     runs-on: macos-26
+    permissions:
+      contents: write
     env:
       CHANNEL: nightly
       UPSTREAM_CHANNEL: ""
@@ -85,6 +87,24 @@ jobs:
           python3 scripts/ci/workflow.py encrypt-build || true
           echo "encrypted=true" >> $GITHUB_OUTPUT
           exit $STATUS
+
+      # --------------------------------------------------
+      # publish SideStore.ipa to the "nightly" release so the
+      # LiveContainer fork's build_github.sh can fetch it from
+      # https://github.com/liehuu/SideStore/releases/download/nightly/SideStore.ipa
+      # --------------------------------------------------
+      - name: Publish to nightly release
+        if: success()
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: nightly
+          name: nightly
+          files: SideStore.ipa
+          body: |
+            Custom SideStore 0.6.3 (AltStore prefix bundle ID)
+            Commit ${{ github.sha }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       # --------------------------------------------------
       # artifacts
