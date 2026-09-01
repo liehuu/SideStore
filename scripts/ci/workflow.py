@@ -141,34 +141,23 @@ def clean_spm_cache():
 
 def build():
     run("mkdir -p build/logs")
-    # Workaround: SwiftPM's own downloader fails to fetch the OpenSSL binary
-    # .xcframework from GitHub releases. It does an *unauthenticated* download
-    # (the GH_TOKEN is only wired into `git` via insteadOf, not SwiftPM's HTTP
-    # client), so on a shared runner IP it gets rate-limited / flakes, leaves a
-    # half-written artifact dir behind, and then refuses to overwrite it with
-    # "already exists in file system" -> fatalError, looping forever.
-    # Pre-fetch it ourselves with curl (authenticated via GH_TOKEN, retried) and
-    # seed SwiftPM's artifact cache so xcodebuild skips the broken download.
+    # Workaround for SwiftPM bug apple/swift-package-manager#6635: its own
+    # downloader truncates this 43MB binary artifact on CI (it fetched ~6KB of a
+    # 12MB archive there; here it yields "invalid archive returned from <url>"),
+    # while `curl` pulls the very same URL intact at ~60MB/s. Two mitigations:
+    #   1) Drop the git credential rewrite (url."https://x-access-token:...@".
+    #      insteadOf). Multiple reports show stray credentials for the download
+    #      host make SwiftPM's binary fetch truncate. GH_TOKEN is only needed for
+    #      `git` clones; the release asset must be fetched anonymously.
+    #   2) Wipe every SwiftPM artifact location so no stale/partial copy
+    #      survives from the Actions cache (a leftover dir also trips the
+    #      "already exists in file system" fatalError).
     run(
         """
-        OPENSSL_URL='https://github.com/krzyzanowskim/OpenSSL/releases/download/3.6.2000/OpenSSL.xcframework.zip'
-        ART_DIR="$HOME/Library/Caches/org.swift.swiftpm/artifacts/https___github_com_krzyzanowskim_OpenSSL_releases_download_3_6_2000_OpenSSL_xcframework_zip"
-        rm -rf "$ART_DIR"
-        mkdir -p "$ART_DIR"
-        TMP_ZIP="$(mktemp -t openssl.XXXXXX).zip"
-        if curl -fSL --retry 5 --retry-delay 5 -o "$TMP_ZIP" "$OPENSSL_URL"; then
-          echo "seeded OpenSSL via direct release URL"
-          unzip -o -q "$TMP_ZIP" -d "$ART_DIR"
-        elif [ -n "$GH_TOKEN" ]; then
-          echo "direct download failed, retrying via GitHub API with token"
-          ASSET_ID=$(curl -sL -H "Authorization: Bearer $GH_TOKEN" "https://api.github.com/repos/krzyzanowskim/OpenSSL/releases/tags/3.6.2000" | python3 -c "import sys,json; d=json.load(sys.stdin); ids=[x['id'] for x in d.get('assets',[]) if x['name']=='OpenSSL.xcframework.zip']; print(ids[0] if ids else '')")
-          if [ -n "$ASSET_ID" ]; then
-            curl -fSL --retry 5 --retry-delay 5 -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/octet-stream" -o "$TMP_ZIP" "https://api.github.com/repos/krzyzanowskim/OpenSSL/releases/assets/$ASSET_ID"
-            unzip -o -q "$TMP_ZIP" -d "$ART_DIR"
-          fi
-        fi
-        rm -f "$TMP_ZIP"
-        echo "OpenSSL seed step done (artifact dir: $ART_DIR)"
+        git config --global --unset-all url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf || true
+        rm -rf "$HOME/Library/Caches/org.swift.swiftpm/artifacts"
+        rm -rf "$HOME/Library/org.swift.swiftpm"
+        echo "SwiftPM artifact caches cleared; git credential rewrite removed"
         """
     )
     run(
