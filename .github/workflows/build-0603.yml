@@ -33,7 +33,7 @@ jobs:
           submodules: recursive
           fetch-depth: 0
 
-      - run: brew install ldid xcbeautify
+      - run: brew install ldid
 
       # --------------------------------------------------
       # runtime env setup
@@ -89,6 +89,14 @@ jobs:
       # --------------------------------------------------
       # artifacts
       # --------------------------------------------------
+      # Raw build log on failure (or when IPA was not produced), so failures can be
+      # diagnosed from the full unfiltered xcodebuild output without re-running.
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: build-logs-${{ github.run_number }}
+          path: build/logs/
+
       - uses: actions/upload-artifact@v4
         if: success()
         with:
