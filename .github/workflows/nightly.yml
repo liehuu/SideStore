@@ -152,7 +152,13 @@ jobs:
           # i.e. every non-alphanumeric character becomes "_".
           SPM_ARTIFACTS="$HOME/Library/Caches/org.swift.swiftpm/artifacts"
           rm -rf "$SPM_ARTIFACTS"
-          find "$HOME/Library/Developer/Xcode/DerivedData" -path '*/SourcePackages/artifacts' -prune -exec rm -rf {} + 2>/dev/null || true
+          # NOTE: must delete the WHOLE SourcePackages dir, not just its `artifacts`
+          # subdir. The CI cache restores DerivedData together with
+          # SourcePackages/workspace-state.json; removing only `artifacts` leaves
+          # SwiftPM believing the artifacts are already fetched, so it skips
+          # extraction entirely and every target then fails with
+          # "There is no XCFramework found at .../SourcePackages/artifacts/...".
+          find "$HOME/Library/Developer/Xcode/DerivedData" -type d -name SourcePackages -prune -exec rm -rf {} + 2>/dev/null || true
           mkdir -p "$SPM_ARTIFACTS"
 
           seed_artifact() {
