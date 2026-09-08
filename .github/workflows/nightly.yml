@@ -136,6 +136,7 @@ jobs:
         env:
           BUILD_LOG_ZIP_PASSWORD: ${{ secrets.BUILD_LOG_ZIP_PASSWORD }}
         run: |
+          rm -rf ~/Library/Caches/org.swift.swiftpm/artifacts
           python3 scripts/ci/workflow.py build; STATUS=$?
           python3 scripts/ci/workflow.py encrypt-build
           echo "encrypted=true" >> $GITHUB_OUTPUT
