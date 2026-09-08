@@ -141,6 +141,14 @@ jobs:
           echo "encrypted=true" >> $GITHUB_OUTPUT
           exit $STATUS
 
+      - name: Debug - dump raw build log on failure
+        if: failure()
+        run: |
+          echo "===== [DEBUG] raw xcodebuild error lines ====="
+          grep -n -iE "error:|failed|unable|cannot|invalid|checksum|no such|not found|downloading|fatal" build/logs/build.log 2>/dev/null | tail -120 || true
+          echo "===== [DEBUG] raw tail ====="
+          tail -60 build/logs/build.log 2>/dev/null || true
+
       - name: Tests Build
         if: >
           steps.build_gate.outputs.should_skip != 'true' &&
