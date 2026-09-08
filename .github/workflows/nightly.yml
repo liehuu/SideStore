@@ -137,23 +137,50 @@ jobs:
           BUILD_LOG_ZIP_PASSWORD: ${{ secrets.BUILD_LOG_ZIP_PASSWORD }}
         run: |
           # --- Break SwiftPM binaryTarget concurrent-download race (FB10471859) ---
-          # CodeSignKit / GSACryptoKit / RemotePairingKit each declare the SAME
-          # OpenSSL binaryTarget URL. SwiftPM downloads the identically-mangled
-          # global-cache path concurrently -> the losers hit "already exists in
-          # file system" / "doesn't exist in file system" -> fatalError.
-          # Fix: clear stale halffetched artifacts, then pre-seed the complete zip
-          # into the exact global-cache path SwiftPM looks up, so all three packages
-          # hit the cache and skip downloading entirely.
-          OPENSSL_URL="https://github.com/krzyzanowskim/OpenSSL/releases/download/3.6.2000/OpenSSL.xcframework.zip"
-          OPENSSL_SHA256="37846a8bd302cb2443eff47f1045ab844d0cd40bf82cc6159cfad9aa5c3eff9e"
+          # SwiftPM binaryTarget download race (Apple FB10471859): several packages
+          # resolve binaryTargets concurrently and collide on the same mangled
+          # global-cache path -> "already exists in file system" /
+          # "doesn't exist in file system" -> fatalError, which aborts the WHOLE
+          # resolve and leaves every artifact missing.
+          #
+          # Fix: clear stale half-fetched artifacts, then pre-seed EVERY binaryTarget
+          # zip into the exact global-cache path SwiftPM looks up, so SwiftPM's
+          # fetch() sees a cache hit for all of them and performs zero downloads.
+          # (Seeding only OpenSSL is not enough - the race just moves to the rest.)
+          #
+          # Cache key = url.absoluteString.spm_mangledToC99ExtendedIdentifier(),
+          # i.e. every non-alphanumeric character becomes "_".
           SPM_ARTIFACTS="$HOME/Library/Caches/org.swift.swiftpm/artifacts"
-          SPM_CACHEKEY="https___github_com_krzyzanowskim_OpenSSL_releases_download_3_6_2000_OpenSSL_xcframework_zip"
           rm -rf "$SPM_ARTIFACTS"
           find "$HOME/Library/Developer/Xcode/DerivedData" -path '*/SourcePackages/artifacts' -prune -exec rm -rf {} + 2>/dev/null || true
           mkdir -p "$SPM_ARTIFACTS"
-          curl -fL --retry 3 --retry-delay 2 -o "$SPM_ARTIFACTS/$SPM_CACHEKEY" "$OPENSSL_URL"
-          echo "$OPENSSL_SHA256  $SPM_ARTIFACTS/$SPM_CACHEKEY" | shasum -a 256 -c - || { echo "OpenSSL checksum mismatch" >&2; exit 1; }
-          echo "OpenSSL pre-seeded into SwiftPM global artifact cache: $SPM_ARTIFACTS/$SPM_CACHEKEY"
+
+          seed_artifact() {
+            url="$1"; sha="$2"
+            key="$(printf '%s' "$url" | sed 's/[^a-zA-Z0-9]/_/g')"
+            dest="$SPM_ARTIFACTS/$key"
+            echo "==> seeding $key"
+            curl -fL --retry 5 --retry-delay 3 -o "$dest" "$url"
+            echo "$sha  $dest" | shasum -a 256 -c - || { echo "checksum mismatch: $url" >&2; exit 1; }
+          }
+
+          # remotepairingkit / codesignkit / gsacryptokit -> OpenSSL
+          seed_artifact "https://github.com/krzyzanowskim/OpenSSL/releases/download/3.6.2000/OpenSSL.xcframework.zip" \
+                        "37846a8bd302cb2443eff47f1045ab844d0cd40bf82cc6159cfad9aa5c3eff9e"
+          # anisettekit -> Unicorn
+          seed_artifact "https://github.com/mahee96/unicorn/releases/download/2.1.4-multiarch/Unicorn.xcframework.zip" \
+                        "4f61907db6aafc56fb3e336b524d742342312f498bb40739f1da55fb4a24614a"
+          # minimuxer -> EMProxy
+          seed_artifact "https://github.com/SideStore/em_proxy/releases/download/v0.9.3/EMProxy.xcframework.zip" \
+                        "3998789c38d09b55e488d46e31897affc7bbcb9c244d7a9d5b2d5cf6afd916c3"
+          # devicegateway -> IDevice
+          seed_artifact "https://github.com/SideStore/idevice/releases/download/v0.1.66-ss-61c2704/idevice-xcframework-v0.1.66-ss-61c2704.zip" \
+                        "6f32b32ca43d3f28c145742da926cc279d312abd99abe55c79f875e2d6d5e162"
+          # devicegateway -> libimobiledevice
+          seed_artifact "https://github.com/SideStore/libimobiledevice-xcframework/releases/download/1.4.0-ss-0f88f7b/libimobiledevice.xcframework.zip" \
+                        "7ccbdd56b074807461fc43d2e32ba92f20df2501a6c14cf9f64a917e7f3fe6e7"
+
+          ls -la "$SPM_ARTIFACTS"
           python3 scripts/ci/workflow.py build; STATUS=$?
           python3 scripts/ci/workflow.py encrypt-build
           echo "encrypted=true" >> $GITHUB_OUTPUT
