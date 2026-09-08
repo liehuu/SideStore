@@ -40,7 +40,13 @@ struct RefreshAllAppsWidgetIntent: AppIntent, ProgressReportingIntent
 // https://mastodon.social/@mgorbach/110812347476671807
 //
 // Unfortunately `ForegroundContinuableIntent` is marked as unavailable in app extensions,
-// so we "conform" RefreshAllAppsWidgetIntent to it in an `unavailable` extension ¯\_(ツ)_/¯
-@available(iOS, unavailable)
-@available(tvOS, unavailable)
-extension RefreshAllAppsWidgetIntent: ForegroundContinuableIntent {}
+// so upstream "conformed" RefreshAllAppsWidgetIntent to it in an `unavailable` extension.
+//
+// That declaration has been REMOVED. Reason: even though `@available(iOS, unavailable)`
+// means the conformance never actually exists at runtime on iOS, the App Intents metadata
+// extractor still records `com.apple.link.systemProtocol.ForegroundContinuable` in
+// `Metadata.appintents/extract.actionsdata`. `ForegroundContinuableIntent` folds into the
+// iOS 17.2-only `.foreground(.dynamic)` mode, which bumps the *whole bundle's* action
+// `introducedVersion` to 17.2 — so Shortcuts reports "This action is not supported on
+// iPhone" for every SideStore action on iOS 17.0/17.1.
+// See https://github.com/SideStore/SideStore/issues/968 and #1141.
