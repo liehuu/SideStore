@@ -260,9 +260,43 @@ final class PipelineRunner: Sendable
     private func performPipeline(for operation: AppOperation, handler: PipelineExecutionHandler, group: RefreshGroup) async throws -> InstalledApp
     {
         let pipelineSteps = PipelineStepDefinition.steps(for: operation)
+        
+        // ── Cross-context safety ──────────────────────────────────────────
+        // InstalledApp objects carried by `operation` may belong to a different
+        // (possibly deallocated) NSManagedObjectContext — this happens every
+        // time the pipeline is entered from a background-refresh / Shortcuts
+        // path: IntentHandler and RefreshAllAppsIntent both call
+        // `newBackgroundContext()` to fetch apps, then pass them to
+        // `AppManager.backgroundRefresh`, which creates *another*
+        // `newBackgroundContext()` for the StandaloneOperationContext.
+        //
+        // Once the original context is released, accessing @NSManaged
+        // properties (bundleIdentifier, fileURL, …) returns empty values.
+        // That corrupts every downstream path:
+        //   bundleID="" → fileURL=".../Apps//App.app" → ALTApplication=nil
+        //   → "VerifyCertificateOperation: targetAppBundle is missing in context."
+        //
+        // Re-fetch the InstalledApp on the pipeline's own dbBackgroundContext
+        // before extracting any properties, so all @NSManaged reads happen on
+        // a context that stays alive for the entire pipeline lifetime.
+        let dbBackgroundContext = group.context.dbBackgroundContext
+        let resolvedApp: InstalledApp? = await dbBackgroundContext.perform {
+            guard let installedApp = operation.app as? InstalledApp else { return nil }
+            return dbBackgroundContext.object(with: installedApp.objectID) as? InstalledApp
+        }
+        
+        // Read bundleIdentifier on the owning context (never trust it outside one).
+        let resolvedBundleID: String
+        if let resolvedApp {
+            resolvedBundleID = await dbBackgroundContext.perform { resolvedApp.bundleIdentifier }
+        } else {
+            // Non-Core-Data app (e.g. ALTApplication from a fresh download).
+            resolvedBundleID = operation.bundleIdentifier
+        }
+        
         let context = InstallAppOperationContext(
             pipelineSteps: pipelineSteps,
-            bundleIdentifier: operation.bundleIdentifier,
+            bundleIdentifier: resolvedBundleID,
             standaloneContext: group.context,
             sharedContext: group.sharedContext,
             handler: handler,
@@ -274,10 +308,19 @@ final class PipelineRunner: Sendable
         if case .update(_,  let customID) = operation { context.customBundleIdentifier  = customID }
         if case .resign(_,  let mode)     = operation { context.alternateIconMode       = mode }
         
-        if let app = operation.app as? InstalledApp {
-            context.targetAppBundle = ALTApplication(fileURL: app.fileURL)
-            context.useMainProfile = app.useMainProfile
-            context.customBundleIdentifier = app.customBundleIdentifier
+        if let app = resolvedApp {
+            // Read all @NSManaged properties synchronously on the owning context.
+            var resolvedFileURL: URL!
+            var resolvedUseMainProfile = false
+            var resolvedCustomBundleID: String?
+            dbBackgroundContext.performAndWait {
+                resolvedFileURL = app.fileURL
+                resolvedUseMainProfile = app.useMainProfile
+                resolvedCustomBundleID = app.customBundleIdentifier
+            }
+            context.targetAppBundle = ALTApplication(fileURL: resolvedFileURL)
+            context.useMainProfile = resolvedUseMainProfile
+            context.customBundleIdentifier = resolvedCustomBundleID
             context.installedApp = app
         }
         
@@ -286,9 +329,15 @@ final class PipelineRunner: Sendable
         }
         
         var downloadingApp = operation.app
-        if let installedApp = operation.app as? InstalledApp {
+        if let installedApp = resolvedApp {
+            var resolvedFileURL: URL!
+            var resolvedStoreApp: StoreApp?
+            dbBackgroundContext.performAndWait {
+                resolvedFileURL = installedApp.fileURL
+                resolvedStoreApp = installedApp.storeApp
+            }
             if case .resign = operation { downloadingApp = installedApp }
-            else if let storeApp = installedApp.storeApp, !FileManager.default.fileExists(atPath: installedApp.fileURL.path) {
+            else if let storeApp = resolvedStoreApp, !FileManager.default.fileExists(atPath: resolvedFileURL.path) {
                 downloadingApp = storeApp
             }
         }
