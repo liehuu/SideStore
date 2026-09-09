@@ -37,9 +37,7 @@ struct InstallIPAIntent: AppIntent, ProgressReportingIntent
 {
     static var title: LocalizedStringResource = "Install IPA"
     static var description = IntentDescription("Installs an IPA file with SideStore.")
-    // `openAppWhenRun` is an iOS 17.2 API; declaring it bumps this intent's introducedVersion to 17.2,
-    // which makes Shortcuts report "This action is not supported" on iOS 17.0/17.1. Defaulting to the
-    // background mode (openAppWhenRun == false) is already the AppIntent default, so we simply omit it.
+    static var openAppWhenRun = false
 
     @Parameter(title: "IPA File")
     var ipaFile: IntentFile
@@ -121,7 +119,7 @@ extension RefreshAllAppsIntent
 }
 
 @available(iOS 17.0, tvOS 17.0, *)
-struct RefreshAllAppsIntent: AppIntent, CustomIntentMigratedAppIntent, PredictableIntent, ProgressReportingIntent
+struct RefreshAllAppsIntent: AppIntent, CustomIntentMigratedAppIntent, PredictableIntent, ProgressReportingIntent, ForegroundContinuableIntent
 {
     static let intentClassName = "RefreshAllIntent"
     
@@ -162,15 +160,10 @@ struct RefreshAllAppsIntent: AppIntent, CustomIntentMigratedAppIntent, Predictab
     {
         do
         {
-            // We removed `ForegroundContinuableIntent` conformance (and its `requestToContinueInForeground()`
-            // call) because the App Intents metadata extractor folds that protocol into the iOS 17.2-only
-            // `.foreground(.dynamic)` mode, which bumped the intent's introducedVersion to 17.2 and made
-            // Shortcuts report "This action is not supported" on iOS 17.0/17.1 devices.
-            //
-            // Instead we still try to finish within ~27 seconds; if we time out we keep refreshing in the
-            // background and surface a notification when the operation completes.
+            // Request foreground execution at ~27 seconds to gracefully handle timeout.
+            // (Matches upstream SideStore develop: continuing in the foreground is what keeps
+            // Shortcuts from reporting the action as unsupported / timing out early.)
             let deadline: ContinuousClock.Instant = .now + .seconds(27)
-            var didTimeout = false
             
             try await withThrowingTaskGroup(of: Void.self) { taskGroup in
                 taskGroup.addTask {
@@ -195,20 +188,14 @@ struct RefreshAllAppsIntent: AppIntent, CustomIntentMigratedAppIntent, Predictab
                 {
                     // We took too long to finish and return the final result,
                     // so we'll now present a normal notification when finished.
-                    didTimeout = true
                     let operation = await self.operationActor.operation
                     operation?.presentsFinishedNotification = true
+                    
+                    try await self.requestToContinueInForeground()
                 }
             }
             
-            if didTimeout
-            {
-                return .result(dialog: "Refreshing in the background. You'll be notified when it finishes.")
-            }
-            else
-            {
-                return .result(dialog: "All apps have been refreshed.")
-            }
+            return .result(dialog: "All apps have been refreshed.")
         }
         catch
         {

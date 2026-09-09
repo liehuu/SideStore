@@ -40,13 +40,14 @@ struct RefreshAllAppsWidgetIntent: AppIntent, ProgressReportingIntent
 // https://mastodon.social/@mgorbach/110812347476671807
 //
 // Unfortunately `ForegroundContinuableIntent` is marked as unavailable in app extensions,
-// so upstream "conformed" RefreshAllAppsWidgetIntent to it in an `unavailable` extension.
+// so we "conform" RefreshAllAppsWidgetIntent to it in an `unavailable` extension ¯\_(ツ)_/¯
 //
-// That declaration has been REMOVED. Reason: even though `@available(iOS, unavailable)`
-// means the conformance never actually exists at runtime on iOS, the App Intents metadata
-// extractor still records `com.apple.link.systemProtocol.ForegroundContinuable` in
-// `Metadata.appintents/extract.actionsdata`. `ForegroundContinuableIntent` folds into the
-// iOS 17.2-only `.foreground(.dynamic)` mode, which bumps the *whole bundle's* action
-// `introducedVersion` to 17.2 — so Shortcuts reports "This action is not supported on
-// iPhone" for every SideStore action on iOS 17.0/17.1.
-// See https://github.com/SideStore/SideStore/issues/968 and #1141.
+// NOTE: This matches upstream SideStore develop exactly. An earlier attempt removed this
+// declaration hoping to lower the bundle's `introducedVersion` from 17.2 back to 17.0, but
+// binary verification showed `Metadata.appintents/extract.actionsdata` still reports 17.2
+// for every AppIntent (including bare ones with no system protocols), i.e. 17.2 is an
+// intrinsic annotation for the AppIntent type itself and cannot be lowered from source.
+// Keeping upstream's declaration is therefore harmless and keeps us aligned with upstream.
+@available(iOS, unavailable)
+@available(tvOS, unavailable)
+extension RefreshAllAppsWidgetIntent: ForegroundContinuableIntent {}
