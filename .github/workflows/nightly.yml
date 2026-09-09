@@ -21,6 +21,11 @@ concurrency:
 jobs:
   build:
     runs-on: macos-26
+    permissions:
+      # `scripts/ci/workflow.py upload-release` calls `gh release create/edit` on the
+      # nightly release. Without explicit contents:write the GITHUB_TOKEN is read-only
+      # and that step dies with "HTTP 403: Resource not accessible by integration".
+      contents: write
     env:
       DEPLOY_KEY: ${{ secrets.CROSS_REPO_PUSH_KEY }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
