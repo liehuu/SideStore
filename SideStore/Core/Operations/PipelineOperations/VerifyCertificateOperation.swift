@@ -60,7 +60,17 @@ final class VerifyCertificateOperation: BasePipelineOperation<InstallAppOperatio
                 debugLog("[VerifyCertificateOperation] Running in verification-only mode (!willResign) for '\(appName)'...")
                 
                 guard let appBundle = self.context.targetAppBundle else {
-                    throw OperationError.invalidParameters("VerifyCertificateOperation: targetAppBundle is missing in context.")
+                    // Diagnostics: this bundle is the only thing that can be nil here, and it is
+                    // produced solely by PipelineRunner (ALTApplication(fileURL: app.fileURL)).
+                    // Surface where it was expected to live so a single Shortcuts run tells us
+                    // whether the cached App.app is absent, unreadable, or resolved elsewhere.
+                    let candidateURL = self.context.installedApp?.fileURL
+                    let exists = candidateURL.map { FileManager.default.fileExists(atPath: $0.path) } ?? false
+                    let sharedDirectory = FileManager.default.altstoreSharedDirectory?.path ?? "nil"
+                    throw OperationError.invalidParameters(
+                        "VerifyCertificateOperation: targetAppBundle is missing in context. "
+                        + "bundleID=\(bundleID) fileURL=\(candidateURL?.path ?? "nil") exists=\(exists) sharedDir=\(sharedDirectory)"
+                    )
                 }
                 guard let binaryCert = CertificateManager.shared.getSigningCertificate(at: appBundle.fileURL) else {
                     throw OperationError.invalidParameters("Could not locate signing certificate for '\(appName)'.")
