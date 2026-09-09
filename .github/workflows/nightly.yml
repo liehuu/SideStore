@@ -192,6 +192,13 @@ jobs:
           echo "encrypted=true" >> $GITHUB_OUTPUT
           exit $STATUS
 
+      - name: Verify App Intents / SiriKit wiring
+        run: |
+          # Fails the build if an App Intent claims to migrate the legacy SiriKit
+          # `RefreshAllIntent`: that shadows the working SiriKit action and makes
+          # "Refresh All Apps" report "not supported on iPhone" on iOS 17.0/17.1.
+          python3 scripts/ci/check_appintents.py SideStore.ipa
+
       - name: Debug - dump raw build log on failure
         if: failure()
         run: |
