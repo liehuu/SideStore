@@ -88,6 +88,13 @@ jobs:
           echo "encrypted=true" >> $GITHUB_OUTPUT
           exit $STATUS
 
+      # Fail the build if an App Intent took over the legacy SiriKit `RefreshAllIntent`
+      # identity - that is what makes "Refresh All Apps" unsupported on iOS 17.0/17.1 (#968).
+      - name: Verify App Intents wiring
+        if: success()
+        run: |
+          python3 scripts/ci/check_appintents.py SideStore.ipa
+
       # --------------------------------------------------
       # publish SideStore.ipa to the "nightly" release so the
       # LiveContainer fork's build_github.sh can fetch it from

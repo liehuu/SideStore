@@ -48,11 +48,31 @@ extension RefreshAllAppsIntent
     }
 }
 
+// NOTE: This intent intentionally does NOT conform to `CustomIntentMigratedAppIntent`.
+//
+// Background: SideStore still ships the legacy SiriKit intent `RefreshAllIntent`
+// (AltStore/Intents/Legacy/Intents.intentdefinition + `INIntentsSupported` in Info.plist,
+// handled by `IntentHandler` via `AppDelegate.application(_:handlerFor:)`). That is the exact
+// code path 0.5.8 used, and it works on iOS 17.0/17.1.
+//
+// Conforming to `CustomIntentMigratedAppIntent` makes this App Intent *take over* the
+// `RefreshAllIntent` identity. The App Intents metadata extractor (xcode-tools 17C519/17E202,
+// `Metadata.appintents` schema 3.0) stamps **every** App Intent with
+// `availabilityAnnotations.LNPlatformNameIOS.introducedVersion = 17.2` — even bare ones with no
+// system protocols at all (verified against the widget extension's `PaginationIntent`, which has
+// `systemProtocols: []` and is still 17.2). So on iOS 17.0/17.1 the migrated action resolves to
+// this App Intent, is unavailable, and Shortcuts reports
+// "This action is not supported on iPhone" — while the perfectly good SiriKit intent is shadowed.
+//
+// Dropping the migration conformance leaves the two as independent actions:
+//   • iOS < 17.2 → App Intent unavailable, Shortcuts falls back to the SiriKit
+//     `RefreshAllIntent` (0.5.8 behaviour) and refresh works again.
+//   • iOS >= 17.2 → this App Intent is used (and the auto-shortcut resolves to it).
+// Old shortcuts that referenced `RefreshAllIntent` keep working too, since they now resolve
+// back to the SiriKit intent.
 @available(iOS 17.0, *)
-struct RefreshAllAppsIntent: AppIntent, CustomIntentMigratedAppIntent, PredictableIntent, ProgressReportingIntent, ForegroundContinuableIntent
+struct RefreshAllAppsIntent: AppIntent, PredictableIntent, ProgressReportingIntent, ForegroundContinuableIntent
 {
-    static let intentClassName = "RefreshAllIntent"
-    
     static var title: LocalizedStringResource = "Refresh All Apps"
     static var description = IntentDescription("Refreshes your sideloaded apps to prevent them from expiring.")
     
