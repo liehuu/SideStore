@@ -51,7 +51,7 @@ final class FetchAnisetteDataOperation: ResultOperation<ALTAnisetteData>, WebSoc
         
         getAnisetteServerUrl(viewContext){ url, error in
             guard let urlString = url else {
-                self.finish(.failure(error!))
+                self.finish(.failure(error ?? OperationError.anisetteV3Error(message: "No valid anisette server found")))
                 return
             }
 
@@ -65,7 +65,18 @@ final class FetchAnisetteDataOperation: ResultOperation<ALTAnisetteData>, WebSoc
                let adiPb = Keychain.shared.adiPb {
                 self.fetchAnisetteV3(identifier, adiPb)
             } else {
-                self.provision()
+                // FIX(login-crash): No cached adi.pb → do NOT enter the WebSocket V3
+                // provisioning flow. That flow requires reaching gsa.apple.com
+                // (https://gsa.apple.com/grandslam/GsService2/lookup), which is blocked or
+                // unreachable in many regions and, combined with force-unwraps along the
+                // provisioning path, caused sign-in to silently crash/exit.
+                //
+                // Official SideSign's RemoteAnisetteDataProvider does the same thing here:
+                // when adiPb is empty it skips v3 get_headers and falls back to a plain
+                // V1 root GET, which returns full anisette headers without any Apple
+                // provisioning handshake. Align with that behavior.
+                self.printOut("No cached adi.pb → using V1 root fetch (skipping gsa.apple.com + WebSocket provisioning)")
+                self.fetchAnisetteV1()
             }
         }
     }
@@ -176,7 +187,13 @@ final class FetchAnisetteDataOperation: ResultOperation<ALTAnisetteData>, WebSoc
                        message.contains("-45061") {
                         self.printOut("Error message contains -45061 (not provisioned), resetting adi.pb and retrying")
                         Keychain.shared.adiPb = nil
-                        return provision()
+                        // FIX(login-crash): -45061 means the cached adi.pb is stale/not
+                        // provisioned. Previously this re-entered the fragile gsa.apple.com +
+                        // WebSocket provisioning flow (crash-prone). Fall back to V1 root
+                        // fetch instead, which returns usable headers without provisioning.
+                        self.printOut("-45061 → falling back to V1 root fetch")
+                        self.printOut("Anisette URL: \(self.url?.absoluteString ?? "<nil>")")
+                        return self.fetchAnisetteV1()
                     } else { throw OperationError.anisetteV3Error(message: message ?? "Unknown error") }
                 }
             }
@@ -189,9 +206,18 @@ final class FetchAnisetteDataOperation: ResultOperation<ALTAnisetteData>, WebSoc
             if let routingInfo = json["X-Apple-I-MD-RINFO"] { formattedJSON["routingInfo"] = routingInfo }
             
             if v3 {
-                formattedJSON["deviceDescription"] = self.clientInfo!
-                formattedJSON["localUserID"] = self.mdLu!
-                formattedJSON["deviceUniqueIdentifier"] = self.deviceId!
+                // FIX(login-crash): never force-unwrap clientInfo/mdLu/deviceId.
+                // If they aren't ready (e.g. fetchClientInfo fast-path raced), fall back
+                // to V1 root fetch instead of crashing.
+                guard let clientInfo = self.clientInfo,
+                      let mdLu = self.mdLu,
+                      let deviceId = self.deviceId else {
+                    self.printOut("V3 anisette fields not ready → falling back to V1 root fetch")
+                    return self.fetchAnisetteV1()
+                }
+                formattedJSON["deviceDescription"] = clientInfo
+                formattedJSON["localUserID"] = mdLu
+                formattedJSON["deviceUniqueIdentifier"] = deviceId
                 
                 // Generate date stuff on client
                 let formatter = DateFormatter()
@@ -275,9 +301,17 @@ final class FetchAnisetteDataOperation: ResultOperation<ALTAnisetteData>, WebSoc
     
     func fetchAnisetteV1() {
         self.printOut("Fetching anisette V1")
-        URLSession.shared.dataTask(with: self.url!) { data, response, error in
+        guard let url = self.url else {
+            self.printOut("fetchAnisetteV1 aborted: server URL is nil")
+            self.finish(.failure(OperationError.anisetteV1Error(message: "Anisette server URL is missing")))
+            return
+        }
+        URLSession.shared.dataTask(with: url) { data, response, error in
             do {
-                guard let data = data, error == nil else { throw OperationError.anisetteV1Error(message: "Unable to fetch data\(error != nil ? " (\(error!.localizedDescription))" : "")") }
+                guard let data = data, error == nil else {
+                    let desc = error?.localizedDescription ?? "unknown error"
+                    throw OperationError.anisetteV1Error(message: "Unable to fetch data (\(desc))")
+                }
                 
                 try self.extractAnisetteData(data, response as? HTTPURLResponse, v3: false)
             } catch let error as NSError {
@@ -465,11 +499,16 @@ final class FetchAnisetteDataOperation: ResultOperation<ALTAnisetteData>, WebSoc
             return callback()
         }
         self.printOut("Trying to get client_info")
-        let clientInfoURL = self.url!.appendingPathComponent("v3").appendingPathComponent("client_info")
+        guard let clientInfoURL = self.url?.appendingPathComponent("v3").appendingPathComponent("client_info") else {
+            self.printOut("client_info fetch aborted: server URL is nil")
+            self.finish(.failure(OperationError.anisetteV3Error(message: "Anisette server URL is missing")))
+            return
+        }
         URLSession.shared.dataTask(with: clientInfoURL) { data, response, error in
             do {
                 guard let data = data, error == nil else {
-                    return self.finish(.failure(OperationError.anisetteV3Error(message: "Couldn't fetch client info. The server may be down\(error != nil ? " (\(error!.localizedDescription))" : "")")))
+                    let desc = error?.localizedDescription ?? "unknown error"
+                    return self.finish(.failure(OperationError.anisetteV3Error(message: "Couldn't fetch client info. The server may be down (\(desc))")))
                 }
                 
                 if let json = try JSONSerialization.jsonObject(with: data, options: []) as? [String: String] {
@@ -477,9 +516,14 @@ final class FetchAnisetteDataOperation: ResultOperation<ALTAnisetteData>, WebSoc
                         self.printOut("Server is V3")
                         
                         self.clientInfo = clientInfo
-                        self.userAgent = json["user_agent"]!
-                        self.printOut("Client-Info: \(self.clientInfo!)")
-                        self.printOut("User-Agent: \(self.userAgent!)")
+                        guard let userAgent = json["user_agent"] else {
+                            self.printOut("Server returned client_info but missing user_agent; falling back to V1 root fetch")
+                            self.finish(.failure(OperationError.anisetteV3Error(message: "Server returned invalid client_info (missing user_agent)")))
+                            return
+                        }
+                        self.userAgent = userAgent
+                        self.printOut("Client-Info: \(clientInfo)")
+                        self.printOut("User-Agent: \(userAgent)")
                         
                         if Keychain.shared.identifier == nil {
                             self.printOut("Generating identifier")
@@ -491,12 +535,36 @@ final class FetchAnisetteDataOperation: ResultOperation<ALTAnisetteData>, WebSoc
                                 return self.finish(.failure(OperationError.provisioningError(result: "Couldn't generate identifier", message: nil)))
                             }
                             
-                            Keychain.shared.identifier = Data(bytes: &bytes, count: bytes.count).base64EncodedString()
+                            let generated = Data(bytes: &bytes, count: bytes.count).base64EncodedString()
+                            Keychain.shared.identifier = generated
                         }
                         
-                        let decoded = Data(base64Encoded: Keychain.shared.identifier!)!
-                        self.mdLu = decoded.sha256().hexEncodedString()
-                        self.printOut("X-Apple-I-MD-LU: \(self.mdLu!)")
+                        guard let identifier = Keychain.shared.identifier,
+                              let decoded = Data(base64Encoded: identifier),
+                              decoded.count == 16 else {
+                            self.printOut("Identifier is missing or not valid base64; regenerating")
+                            // Regenerate a fresh identifier instead of crashing on force-unwrap.
+                            var bytes = [Int8](repeating: 0, count: 16)
+                            let status = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
+                            if status != errSecSuccess {
+                                return self.finish(.failure(OperationError.provisioningError(result: "Couldn't generate identifier", message: nil)))
+                            }
+                            let generated = Data(bytes: &bytes, count: bytes.count).base64EncodedString()
+                            Keychain.shared.identifier = generated
+                            guard let regen = Data(base64Encoded: generated) else {
+                                return self.finish(.failure(OperationError.anisetteV3Error(message: "Failed to create a valid device identifier")))
+                            }
+                            let mdLu = regen.sha256().hexEncodedString()
+                            self.mdLu = mdLu
+                            let uuid: UUID = regen.object()
+                            self.deviceId = uuid.uuidString.uppercased()
+                            self.printOut("X-Apple-I-MD-LU: \(mdLu)")
+                            self.printOut("X-Mme-Device-Id: \(self.deviceId!)")
+                            return callback()
+                        }
+                        let mdLu = decoded.sha256().hexEncodedString()
+                        self.mdLu = mdLu
+                        self.printOut("X-Apple-I-MD-LU: \(mdLu)")
                         let uuid: UUID = decoded.object()
                         self.deviceId = uuid.uuidString.uppercased()
                         self.printOut("X-Mme-Device-Id: \(self.deviceId!)")
@@ -514,8 +582,12 @@ final class FetchAnisetteDataOperation: ResultOperation<ALTAnisetteData>, WebSoc
     func fetchAnisetteV3(_ identifier: String, _ adiPb: String) {
         fetchClientInfo {
             self.printOut("Fetching anisette V3")
-            let url = UserDefaults.standard.menuAnisetteURL
-            var request = URLRequest(url: self.url!.appendingPathComponent("v3").appendingPathComponent("get_headers"))
+            guard let baseURL = self.url else {
+                self.printOut("fetchAnisetteV3 aborted: server URL is nil → falling back to V1")
+                self.finish(.failure(OperationError.anisetteV3Error(message: "Anisette server URL is missing")))
+                return
+            }
+            var request = URLRequest(url: baseURL.appendingPathComponent("v3").appendingPathComponent("get_headers"))
             request.httpMethod = "POST"
             request.httpBody = try! JSONSerialization.data(withJSONObject: [
                 "identifier": identifier,
