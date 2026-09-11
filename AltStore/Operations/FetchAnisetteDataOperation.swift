@@ -70,18 +70,18 @@ final class FetchAnisetteDataOperation: ResultOperation<ALTAnisetteData>, WebSoc
                let adiPb = Keychain.shared.adiPb {
                 self.fetchAnisetteV3(identifier, adiPb)
             } else {
-                // FIX(login-crash): No cached adi.pb → do NOT enter the WebSocket V3
-                // provisioning flow. That flow requires reaching gsa.apple.com
-                // (https://gsa.apple.com/grandslam/GsService2/lookup), which is blocked or
-                // unreachable in many regions and, combined with force-unwraps along the
-                // provisioning path, caused sign-in to silently crash/exit.
-                //
-                // Official SideSign's RemoteAnisetteDataProvider does the same thing here:
-                // when adiPb is empty it skips v3 get_headers and falls back to a plain
-                // V1 root GET, which returns full anisette headers without any Apple
-                // provisioning handshake. Align with that behavior.
-                self.printOut("No cached adi.pb → using V1 root fetch (skipping gsa.apple.com + WebSocket provisioning)")
-                self.fetchAnisetteV1()
+                // FIX(1100): restore the official V3 provisioning flow.
+                // V3 (identifier + adi.pb) keeps a stable machineID, which the
+                // session token is bound to. The old FIX(login-crash) shortcut
+                // sent every device straight to the V1 root endpoint, whose
+                // server-side load balancing rotates across independently
+                // provisioned virtual devices — breaking the token/machineID
+                // pairing and causing error 1100 on refresh.
+                // All force-unwrap crash points along the provisioning path
+                // have been fixed; any failure now falls back to the V1 root
+                // fetch (which retries until machineIDs match, when possible).
+                self.printOut("No cached adi.pb → trying V3 provisioning (falls back to V1 on any failure)")
+                self.provision()
             }
         }
     }
@@ -404,7 +404,15 @@ final class FetchAnisetteDataOperation: ResultOperation<ALTAnisetteData>, WebSoc
     func provision() {
         fetchClientInfo {
             self.printOut("Getting provisioning URLs")
-            var request = self.buildAppleRequest(url: URL(string: "https://gsa.apple.com/grandslam/GsService2/lookup")!)
+            guard let lookupURL = URL(string: "https://gsa.apple.com/grandslam/GsService2/lookup") else {
+                self.printOut("Invalid lookup URL → falling back to V1")
+                self.fetchAnisetteV1()
+                return
+            }
+            guard var request = self.buildAppleRequest(url: lookupURL) else {
+                self.fetchAnisetteV1()
+                return
+            }
             request.httpMethod = "GET"
             URLSession.shared.dataTask(with: request) { data, response, error in
                 if let data = data,
@@ -421,14 +429,22 @@ final class FetchAnisetteDataOperation: ResultOperation<ALTAnisetteData>, WebSoc
                     self.startProvisioningSession()
                 } else {
                     self.printOut("Apple didn't give valid URLs! Got response: \(String(data: data ?? Data("nothing".utf8), encoding: .utf8) ?? "not utf8")")
-                    self.finish(.failure(OperationError.provisioningError(result: "Apple didn't give valid URLs. Please try again later", message: nil)))
+                    // gsa.apple.com unreachable or invalid response — degrade
+                    // gracefully to the V1 root fetch instead of failing.
+                    self.printOut("Provisioning lookup failed → falling back to V1 root fetch")
+                    self.fetchAnisetteV1()
                 }
             }.resume()
         }
     }
     
     func startProvisioningSession() {
-        let provisioningSessionURL = self.url!.appendingPathComponent("v3").appendingPathComponent("provisioning_session")
+        guard let url = self.url else {
+            self.printOut("startProvisioningSession aborted: server URL is nil → falling back to V1")
+            self.fetchAnisetteV1()
+            return
+        }
+        let provisioningSessionURL = url.appendingPathComponent("v3").appendingPathComponent("provisioning_session")
         var wsRequest = URLRequest(url: provisioningSessionURL)
         wsRequest.timeoutInterval = 5
         self.socket = WebSocket(request: wsRequest)
@@ -440,7 +456,13 @@ final class FetchAnisetteDataOperation: ResultOperation<ALTAnisetteData>, WebSoc
         switch event {
         case .text(let string):
             do {
-                if let json = try JSONSerialization.jsonObject(with: string.data(using: .utf8)!, options: []) as? [String: Any] {
+                guard let stringData = string.data(using: .utf8) else {
+                    self.printOut("Failed to encode WebSocket text → falling back to V1")
+                    client.disconnect(closeCode: 0)
+                    self.fetchAnisetteV1()
+                    return
+                }
+                if let json = try JSONSerialization.jsonObject(with: stringData, options: []) as? [String: Any] {
                     guard let result = json["result"] as? String else {
                         self.printOut("The server didn't give us a result")
                         client.disconnect(closeCode: 0)
@@ -451,17 +473,36 @@ final class FetchAnisetteDataOperation: ResultOperation<ALTAnisetteData>, WebSoc
                     switch result {
                     case "GiveIdentifier":
                         self.printOut("Giving identifier")
-                        client.json(["identifier": Keychain.shared.identifier!])
-                        
+                        guard let identifier = Keychain.shared.identifier else {
+                            self.printOut("No identifier to give server → falling back to V1")
+                            client.disconnect(closeCode: 0)
+                            self.fetchAnisetteV1()
+                            return
+                        }
+                        client.json(["identifier": identifier])
+
                     case "GiveStartProvisioningData":
                         self.printOut("Getting start provisioning data")
+                        guard let startProvisioningURL = self.startProvisioningURL,
+                              var request = self.buildAppleRequest(url: startProvisioningURL) else {
+                            self.printOut("startProvisioningURL missing or request build failed → falling back to V1")
+                            client.disconnect(closeCode: 0)
+                            self.fetchAnisetteV1()
+                            return
+                        }
                         let body = [
                             "Header": [String: Any](),
                             "Request": [String: Any](),
                         ]
-                        var request = self.buildAppleRequest(url: self.startProvisioningURL!)
                         request.httpMethod = "POST"
-                        request.httpBody = try! PropertyListSerialization.data(fromPropertyList: body, format: .xml, options: 0)
+                        do {
+                            request.httpBody = try PropertyListSerialization.data(fromPropertyList: body, format: .xml, options: 0)
+                        } catch {
+                            self.printOut("Failed to serialize start provisioning body → falling back to V1: \(error)")
+                            client.disconnect(closeCode: 0)
+                            self.fetchAnisetteV1()
+                            return
+                        }
                         URLSession.shared.dataTask(with: request) { data, response, error in
                             if let data = data,
                                let plist = try? PropertyListSerialization.propertyList(from: data, format: nil) as? Dictionary<String, Dictionary<String, Any>>,
@@ -471,10 +512,10 @@ final class FetchAnisetteDataOperation: ResultOperation<ALTAnisetteData>, WebSoc
                             } else {
                                 self.printOut("Apple didn't give valid start provisioning data! Got response: \(String(data: data ?? Data("nothing".utf8), encoding: .utf8) ?? "not utf8")")
                                 client.disconnect(closeCode: 0)
-                                self.finish(.failure(OperationError.provisioningError(result: "Apple didn't give valid start provisioning data. Please try again later", message: nil)))
+                                self.fetchAnisetteV1()
                             }
                         }.resume()
-                        
+
                     case "GiveEndProvisioningData":
                         self.printOut("Getting end provisioning data")
                         guard let cpim = json["cpim"] as? String else {
@@ -483,15 +524,28 @@ final class FetchAnisetteDataOperation: ResultOperation<ALTAnisetteData>, WebSoc
                             self.finish(.failure(OperationError.provisioningError(result: "The server didn't give us a cpim", message: nil)))
                             return
                         }
+                        guard let endProvisioningURL = self.endProvisioningURL,
+                              var request = self.buildAppleRequest(url: endProvisioningURL) else {
+                            self.printOut("endProvisioningURL missing or request build failed → falling back to V1")
+                            client.disconnect(closeCode: 0)
+                            self.fetchAnisetteV1()
+                            return
+                        }
                         let body = [
                             "Header": [String: Any](),
                             "Request": [
                                 "cpim": cpim,
                             ],
                         ]
-                        var request = self.buildAppleRequest(url: self.endProvisioningURL!)
                         request.httpMethod = "POST"
-                        request.httpBody = try! PropertyListSerialization.data(fromPropertyList: body, format: .xml, options: 0)
+                        do {
+                            request.httpBody = try PropertyListSerialization.data(fromPropertyList: body, format: .xml, options: 0)
+                        } catch {
+                            self.printOut("Failed to serialize end provisioning body → falling back to V1: \(error)")
+                            client.disconnect(closeCode: 0)
+                            self.fetchAnisetteV1()
+                            return
+                        }
                         URLSession.shared.dataTask(with: request) { data, response, error in
                             if let data = data,
                                let plist = try? PropertyListSerialization.propertyList(from: data, format: nil) as? Dictionary<String, Dictionary<String, Any>>,
@@ -502,56 +556,84 @@ final class FetchAnisetteDataOperation: ResultOperation<ALTAnisetteData>, WebSoc
                             } else {
                                 self.printOut("Apple didn't give valid end provisioning data! Got response: \(String(data: data ?? Data("nothing".utf8), encoding: .utf8) ?? "not utf8")")
                                 client.disconnect(closeCode: 0)
-                                self.finish(.failure(OperationError.provisioningError(result: "Apple didn't give valid end provisioning data. Please try again later", message: nil)))
+                                self.fetchAnisetteV1()
                             }
                         }.resume()
-                        
+
                     case "ProvisioningSuccess":
                         self.printOut("Provisioning succeeded!")
                         client.disconnect(closeCode: 0)
                         guard let adiPb = json["adi_pb"] as? String else {
                             self.printOut("The server didn't give us an adi.pb file")
-                            self.finish(.failure(OperationError.provisioningError(result: "The server didn't give us an adi.pb file", message: nil)))
+                            self.fetchAnisetteV1()
                             return
                         }
                         Keychain.shared.adiPb = adiPb
-                        self.fetchAnisetteV3(Keychain.shared.identifier!, Keychain.shared.adiPb!)
-                        
+                        guard let identifier = Keychain.shared.identifier,
+                              let storedAdiPb = Keychain.shared.adiPb else {
+                            self.printOut("Identifier/adiPb missing after provisioning → falling back to V1")
+                            self.fetchAnisetteV1()
+                            return
+                        }
+                        self.fetchAnisetteV3(identifier, storedAdiPb)
+
                     default:
                         if result.contains("Error") || result.contains("Invalid") || result == "ClosingPerRequest" || result == "Timeout" || result == "TextOnly" {
                             self.printOut("Failing because of \(result)")
-                            self.finish(.failure(OperationError.provisioningError(result: result, message: json["message"] as? String)))
+                            // Provisioning protocol error — degrade to V1 instead
+                            // of failing the whole operation.
+                            client.disconnect(closeCode: 0)
+                            self.fetchAnisetteV1()
                         }
                     }
                 }
             } catch let error as NSError {
                 self.printOut("Failed to handle text: \(error.localizedDescription)")
-                self.finish(.failure(OperationError.provisioningError(result: error.localizedDescription, message: nil)))
+                client.disconnect(closeCode: 0)
+                self.fetchAnisetteV1()
             }
             
         case .connected:
             self.printOut("Connected")
-            
+
         case .disconnected(let string, let code):
             self.printOut("Disconnected: \(code); \(string)")
-            
+            if !self.isFinished {
+                self.printOut("WebSocket disconnected before provisioning completed → falling back to V1")
+                self.fetchAnisetteV1()
+            }
+
         case .error(let error):
             self.printOut("Got error: \(String(describing: error))")
-            
+            if !self.isFinished {
+                self.printOut("WebSocket error → falling back to V1")
+                self.fetchAnisetteV1()
+            }
+
         default:
             self.printOut("Unknown event: \(event)")
+            if !self.isFinished {
+                self.fetchAnisetteV1()
+            }
         }
     }
     
-    func buildAppleRequest(url: URL) -> URLRequest {
+    func buildAppleRequest(url: URL) -> URLRequest? {
+        guard let clientInfo = self.clientInfo,
+              let userAgent = self.userAgent,
+              let mdLu = self.mdLu,
+              let deviceId = self.deviceId else {
+            self.printOut("buildAppleRequest aborted: V3 client fields not ready → falling back to V1")
+            return nil
+        }
         var request = URLRequest(url: url)
-        request.setValue(self.clientInfo!, forHTTPHeaderField: "X-Mme-Client-Info")
-        request.setValue(self.userAgent!, forHTTPHeaderField: "User-Agent")
+        request.setValue(clientInfo, forHTTPHeaderField: "X-Mme-Client-Info")
+        request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
         request.setValue("text/x-xml-plist", forHTTPHeaderField: "Content-Type")
         request.setValue("*/*", forHTTPHeaderField: "Accept")
 
-        request.setValue(self.mdLu!, forHTTPHeaderField: "X-Apple-I-MD-LU")
-        request.setValue(self.deviceId!, forHTTPHeaderField: "X-Mme-Device-Id")
+        request.setValue(mdLu, forHTTPHeaderField: "X-Apple-I-MD-LU")
+        request.setValue(deviceId, forHTTPHeaderField: "X-Mme-Device-Id")
 
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
