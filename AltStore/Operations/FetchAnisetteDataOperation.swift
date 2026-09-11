@@ -230,7 +230,11 @@ final class FetchAnisetteDataOperation: ResultOperation<ALTAnisetteData>, WebSoc
                 formattedJSON["locale"] = Locale.current.identifier
                 formattedJSON["timeZone"] = TimeZone.current.abbreviation()
             } else {
-                if let deviceDescription = json["X-MMe-Client-Info"] { formattedJSON["deviceDescription"] = deviceDescription }
+                // FIX(gsa-503): V1 servers also return the blocked Xcode
+                // identifier in X-MMe-Client-Info; normalize it to akd.
+                if let deviceDescription = json["X-MMe-Client-Info"] {
+                    formattedJSON["deviceDescription"] = self.sanitizeClientInfo(deviceDescription)
+                }
                 if let localUserID = json["X-Apple-I-MD-LU"] { formattedJSON["localUserID"] = localUserID }
                 if let deviceUniqueIdentifier = json["X-Mme-Device-Id"] { formattedJSON["deviceUniqueIdentifier"] = deviceUniqueIdentifier }
                 
@@ -515,7 +519,9 @@ final class FetchAnisetteDataOperation: ResultOperation<ALTAnisetteData>, WebSoc
                     if let clientInfo = json["client_info"] {
                         self.printOut("Server is V3")
                         
-                        self.clientInfo = clientInfo
+                        // FIX(gsa-503): anisette servers send the blocked
+                        // "com.apple.dt.Xcode" identifier; normalize to akd.
+                        self.clientInfo = self.sanitizeClientInfo(clientInfo)
                         guard let userAgent = json["user_agent"] else {
                             self.printOut("Server returned client_info but missing user_agent; falling back to V1 root fetch")
                             self.finish(.failure(OperationError.anisetteV3Error(message: "Server returned invalid client_info (missing user_agent)")))
@@ -608,6 +614,28 @@ final class FetchAnisetteDataOperation: ResultOperation<ALTAnisetteData>, WebSoc
     }
     
     
+    // MARK: - Client info sanitization
+
+    /// Since early September 2026, Apple's GSA edge returns HTTP 503 for any
+    /// request whose `X-MMe-Client-Info` header contains the substring
+    /// `com.apple.dt.Xcode` (hardcoded by many anisette servers). Replace it
+    /// with `com.apple.akd`, the daemon that actually performs these requests
+    /// on macOS, so the request reaches the auth service instead of being
+    /// dropped at the edge.
+    ///
+    /// Mirrors:
+    ///   - isideload a19f5f0 "Fix GSA 503: replace blocked Xcode client identifier with akd"
+    ///   - AltStore #1790 "Fix Apple ID sign-in failing with HTTP 503"
+    func sanitizeClientInfo(_ clientInfo: String) -> String {
+        let pattern = #"com\.apple\.dt\.Xcode/[0-9.]+"#
+        guard clientInfo.range(of: pattern, options: .regularExpression) != nil else {
+            return clientInfo
+        }
+        let sanitized = clientInfo.replacingOccurrences(of: pattern, with: "com.apple.akd/1.0", options: .regularExpression)
+        self.printOut("Sanitized blocked Xcode client identifier → akd: \(sanitized)")
+        return sanitized
+    }
+
     private func printOut(_ text: String?){
         let isInternalLoggingEnabled = OperationsLoggingControl.getFromDatabase(for: ANISETTE_VERBOSITY.self)
         if(isInternalLoggingEnabled){
