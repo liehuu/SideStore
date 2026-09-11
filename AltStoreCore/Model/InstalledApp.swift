@@ -117,6 +117,17 @@ public class InstalledApp: BaseEntity, InstalledAppProtocol
     
     
     @objc public var hasUpdate: Bool {
+        // Never report an update for SideStore itself. This fork uses a custom
+        // bundle ID / signing identity that differs from the official sideload
+        // store builds, so comparing against the official source would
+        // constantly flag the self-app as "outdated" and prompt an unwanted
+        // upgrade to the upstream (official) build. Hard-disable update
+        // detection for the self-app.
+        guard self.bundleIdentifier != StoreApp.altstoreAppID else
+        {
+            return false
+        }
+        
         // Basic validation
         guard isActive,
               let storeApp = self.storeApp,
