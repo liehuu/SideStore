@@ -305,18 +305,9 @@ private extension BrowseViewController
     
     func updateSources()
     {
-        AppManager.shared.updateAllSources { result in
-            self.collectionView.refreshControl?.endRefreshing()
-            
-            guard case .failure(let error) = result else { return }
-            
-            if self.dataSource.itemCount > 0
-            {
-                let toastView = ToastView(error: error)
-                toastView.addTarget(nil, action: #selector(TabBarController.presentSources), for: .touchUpInside)
-                toastView.show(in: self)
-            }
-        }
+        // Manual refresh no longer refreshes all sources (per user request);
+        // sources are only refreshed explicitly in the Sources tab.
+        self.collectionView.refreshControl?.endRefreshing()
     }
     
     func update()

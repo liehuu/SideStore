@@ -1534,78 +1534,13 @@ private extension MyAppsViewController
         self.isCheckingForUpdates = true
         
         Task<Void, Never> {
-            do
-            {
-                // async-let so the for-loop below runs first, ensuring we catch didFetchSourceNotification.
-                async let result = try await AppManager.shared.fetchSources()
-                                
-                if #available(iOS 15, *)
-                {
-                    // .map { $0.name } to avoid "non-sendable type 'Notification?' cannot cross actor boundary" warning.
-                    for await _ in NotificationCenter.default.notifications(named: AppManager.didFetchSourceNotification).map({ $0.name })
-                    {
-                        // Wait until _after_ didFetchSourceNotification
-                        // to prevent incorrect update() animations.
-                        break
-                    }
-                }
-                
-                do
-                {
-                    do
-                    {
-                        let (_, context) = try await result
-                        
-                        try await context.performAsync {
-                            try context.save()
-                        }
-                    }
-                    catch let error as AppManager.FetchSourcesError
-                    {
-                        print(error)
-                        try await error.managedObjectContext?.performAsync {
-                            try error.managedObjectContext?.save()
-                        }
-                        
-                        throw error
-                    }
-                }
-                catch let mergeError as MergeError
-                {
-                    guard let sourceID = mergeError.sourceID else { throw mergeError }
-                    
-                    let sanitizedError = (mergeError as NSError).sanitizedForSerialization()
-                    await DatabaseManager.shared.persistentContainer.performBackgroundTask { context in
-                        do
-                        {
-                            guard let source = Source.first(satisfying: NSPredicate(format: "%K == %@", #keyPath(Source.identifier), sourceID), in: context) else { return }
-                            
-                            source.error = sanitizedError
-                            try context.save()
-                        }
-                        catch
-                        {
-                            print("[ALTLog] Failed to assign error \(sanitizedError.localizedErrorCode) to source \(sourceID).", error)
-                        }
-                    }
-                    
-                    throw mergeError
-                }
-            }
-            catch let error as NSError
-            {
-                print(error)
-                let toastView = ToastView(error: error.withLocalizedTitle(NSLocalizedString("Unable to Check for Updates", comment: "")))
-                toastView.addTarget(nil, action: #selector(TabBarController.presentSources), for: .touchUpInside)
-                toastView.show(in: self)
-            }
-            
+            // Manual refresh no longer refreshes sources (per user request);
+            // sources are only refreshed explicitly in the Sources tab.
+            // Just reload the local app list.
             self.isCheckingForUpdates = false
             
-            // Call update() _after_ setting isCheckingForUpdates to false so it will actually update collection view,
-            // but _before_ calling sender.endRefreshing() to avoid weird animation.
+            // Call update() before endRefreshing() to avoid weird animation.
             self.update()
-            
             sender.endRefreshing()
         }
     }
