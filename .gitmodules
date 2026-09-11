@@ -64,5 +64,5 @@
     branch = main
 [submodule "Dependencies/AltSign"]
     path = Dependencies/AltSign
-    url = https://github.com/SideStore/AltSign
-    branch = master
+	url = https://github.com/liehuu/AltSign.git
+	branch = fix/gsa-binary-srp
