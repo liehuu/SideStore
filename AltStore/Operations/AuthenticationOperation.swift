@@ -100,40 +100,11 @@ final class AuthenticationOperation: ResultOperation<(ALTTeam, ALTCertificate, A
                     }
                     session.anisetteData = anisetteData
                 }
-
-                // FIX(session-expired-1100): validate that Apple's developer
-                // services still accept the cached authToken before reusing it.
-                // Otherwise a stale token surfaces mid-refresh as
-                // "Your session has expired. Please log in. (1100)".
-                var reuseCachedSession = true
-                do {
-                    _ = try await withUnsafeThrowingContinuation { (c: UnsafeContinuation<ALTAccount, any Error>) in
-                        ALTAppleAPI.shared.fetchAccount2(session: session) { result in
-                            c.resume(with: result)
-                        }
-                    }
-                } catch {
-                    let nsError = error as NSError
-                    if nsError.code == 1100 {
-                        // Session expired server-side. Drop the cache and fall
-                        // through to silent re-auth (token -> password -> UI).
-                        reuseCachedSession = false
-                        Logger.sideload.notice("Cached session expired (1100). Re-authenticating: \(error)")
-                        Keychain.shared.session = nil
-                    } else {
-                        // Some other transient error; keep the cached session
-                        // and let the actual refresh surface it naturally.
-                        Logger.sideload.notice("Session validation skipped (non-1100 error): \(error)")
-                    }
-                }
-
-                if reuseCachedSession {
-                    self.context.team = team
-                    self.context.session = session
-                    self.context.certificate = certificate
-                    self.finish(.success((team, certificate, session)))
-                    return
-                }
+                self.context.team = team
+                self.context.session = session
+                self.context.certificate = certificate
+                self.finish(.success((team, certificate, session)))
+                return
             }
             
             // new login
