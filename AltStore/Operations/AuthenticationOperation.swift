@@ -84,30 +84,11 @@ final class AuthenticationOperation: ResultOperation<(ALTTeam, ALTCertificate, A
         }
 
         Task {
-            // try to use cached session
-            if
-                let certificate = Keychain.shared.certificate,
-                let session = Keychain.shared.session,
-                let team = Keychain.shared.team
-            {
-                if session.anisetteData.date.timeIntervalSinceNow < -40.0 {
-                    let anisetteData = try await withUnsafeThrowingContinuation { (c: UnsafeContinuation<ALTAnisetteData, any Error>) in
-                        let fetchAnisetteDataOperation = FetchAnisetteDataOperation(context: self.context)
-                        fetchAnisetteDataOperation.resultHandler = { (result) in
-                            c.resume(with: result)
-                        }
-                        self.operationQueue.addOperation(fetchAnisetteDataOperation)
-                    }
-                    session.anisetteData = anisetteData
-                }
-                self.context.team = team
-                self.context.session = session
-                self.context.certificate = certificate
-                self.finish(.success((team, certificate, session)))
-                return
-            }
-            
-            // new login
+            // Always authenticate via signIn() — matches upstream AltStore
+            // (rileytestut). SideStore 0.6.3's cached-session shortcut skipped
+            // signIn()'s token-validation fallback chain (token → password → UI),
+            // so a stale authToken went straight to developer services and
+            // surfaced as "Your session has expired (1100)" on every refresh.
             do {
                 let (account, session) = try await withUnsafeThrowingContinuation { c in
                     self.signIn() { (result) in
