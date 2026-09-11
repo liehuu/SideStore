@@ -110,8 +110,11 @@ struct RefreshAllAppsIntent: AppIntent, PredictableIntent, ProgressReportingInte
     {
         do
         {
-            // Request foreground execution at ~27 seconds to gracefully handle timeout.
-            let deadline: ContinuousClock.Instant = .now + .seconds(27)
+            // Request foreground execution at ~120 seconds to gracefully handle timeout.
+            // Raised from 27s: refreshing all sideloaded apps (each needs anisette + an
+            // Apple server round-trip) routinely exceeds 27s, which caused the intent to
+            // bail and report "操作超时" in Shortcuts/automation contexts.
+            let deadline: ContinuousClock.Instant = .now + .seconds(120)
             
             try await withThrowingTaskGroup(of: Void.self) { taskGroup in
                 taskGroup.addTask {
