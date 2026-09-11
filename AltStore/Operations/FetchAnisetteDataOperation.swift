@@ -30,6 +30,11 @@ final class FetchAnisetteDataOperation: ResultOperation<ALTAnisetteData>, WebSoc
     
     var mdLu: String?
     var deviceId: String?
+
+    // FIX(1100): consecutive V1 fetches may land on different load-balanced
+    // virtual devices; count retries while trying to match the machineID
+    // bound to the cached session token.
+    private var v1MachineIDRetryCount = 0
     
     init(context: OperationContext)
     {
@@ -251,6 +256,28 @@ final class FetchAnisetteDataOperation: ResultOperation<ALTAnisetteData>, WebSoc
             self.printOut("Anisette used: \(formattedJSON)")
             self.printOut("Original JSON: \(json)")
             if let anisette = ALTAnisetteData(json: formattedJSON) {
+                // FIX(1100): V1 anisette servers load-balance across many
+                // independently provisioned virtual devices — consecutive
+                // requests routinely return different machineIDs (verified
+                // against ani.sidestore.io: 5+ distinct devices across 6
+                // requests, while each device's X-Apple-I-MD-M stays stable).
+                // Apple session tokens are bound to the machineID used at
+                // sign-in time, so a mismatched anisette makes every
+                // authenticated request fail with 1100 ("Your session has
+                // expired"). If we already hold a session, retry until the
+                // server hands us the matching virtual device.
+                if !v3,
+                   let expectedMachineID = Keychain.shared.session?.anisetteData.machineID,
+                   anisette.machineID != expectedMachineID,
+                   self.v1MachineIDRetryCount < 12
+                {
+                    self.v1MachineIDRetryCount += 1
+                    self.printOut("Anisette machineID mismatch (retry \(self.v1MachineIDRetryCount)/12); refetching V1")
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                        self.fetchAnisetteV1()
+                    }
+                    return
+                }
                 self.printOut("Anisette is valid!")
                 self.finish(.success(anisette))
             } else {

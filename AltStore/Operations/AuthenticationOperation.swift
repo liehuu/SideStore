@@ -84,11 +84,56 @@ final class AuthenticationOperation: ResultOperation<(ALTTeam, ALTCertificate, A
         }
 
         Task {
-            // Always authenticate via signIn() — matches upstream AltStore
-            // (rileytestut). SideStore 0.6.3's cached-session shortcut skipped
-            // signIn()'s token-validation fallback chain (token → password → UI),
-            // so a stale authToken went straight to developer services and
-            // surfaced as "Your session has expired (1100)" on every refresh.
+            // Try to reuse the cached session (official SideStore 0.6.3 behavior)
+            // so that routine refreshes don't hit GSA on every launch.
+            // FIX(1100): Apple session tokens are bound to the machineID of the
+            // anisette data used at sign-in time. V1 anisette servers rotate
+            // across independently provisioned virtual devices, so a freshly
+            // fetched anisette may carry a different machineID — pairing it with
+            // the cached token makes developer services reject every request
+            // with error 1100 ("Your session has expired"). Only reuse the
+            // cached session when the fresh anisette's machineID matches;
+            // otherwise fall through to signIn() to build a matching pair.
+            do {
+                if
+                    let certificate = Keychain.shared.certificate,
+                    let session = Keychain.shared.session,
+                    let team = Keychain.shared.team
+                {
+                    var isCachedSessionUsable = true
+                    if session.anisetteData.date.timeIntervalSinceNow < -40.0 {
+                        let anisetteData = try await withUnsafeThrowingContinuation { (c: UnsafeContinuation<ALTAnisetteData, any Error>) in
+                            let fetchAnisetteDataOperation = FetchAnisetteDataOperation(context: self.context)
+                            fetchAnisetteDataOperation.resultHandler = { (result) in
+                                c.resume(with: result)
+                            }
+                            self.operationQueue.addOperation(fetchAnisetteDataOperation)
+                        }
+                        if anisetteData.machineID == session.anisetteData.machineID {
+                            // Same virtual device: only the one-time password rotated.
+                            session.anisetteData = anisetteData
+                        } else {
+                            // Server handed us a different virtual device; the cached
+                            // token no longer matches. Fall back to full signIn().
+                            Logger.sideload.notice("Anisette machineID rotated; cached session unusable, falling back to signIn()")
+                            isCachedSessionUsable = false
+                        }
+                    }
+                    if isCachedSessionUsable {
+                        self.context.team = team
+                        self.context.session = session
+                        self.context.certificate = certificate
+                        self.finish(.success((team, certificate, session)))
+                        return
+                    }
+                }
+            } catch {
+                // Failed to refresh anisette for the cached session; fall through
+                // to full signIn() instead of failing the whole operation.
+                Logger.sideload.notice("Cached-session anisette refresh failed, falling back to signIn(): \(error)")
+            }
+
+            // new login
             do {
                 let (account, session) = try await withUnsafeThrowingContinuation { c in
                     self.signIn() { (result) in
