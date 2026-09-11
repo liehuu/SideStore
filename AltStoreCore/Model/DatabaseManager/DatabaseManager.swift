@@ -361,10 +361,19 @@ private extension DatabaseManager
             guard let localApp = ALTApplication(fileURL: Bundle.realMainBundle.bundleURL) else { return }
             
             let altStoreSource: Source
-            
+
             if let source = Source.first(satisfying: NSPredicate(format: "%K == %@", #keyPath(Source.identifier), Source.altStoreIdentifier), in: context)
             {
                 altStoreSource = source
+            }
+            else if let legacySource = Source.first(satisfying: NSPredicate(format: "%K == %@ AND %K != %@",
+                                                                          #keyPath(Source.name), "SideStore Offical",
+                                                                          #keyPath(Source.identifier), Source.altStoreIdentifier), in: context)
+            {
+                // Re-point a previously persisted default source (e.g. one pinned to an
+                // unreachable GitHub releases URL) to the current, reachable source URL so it
+                // is no longer fetched from the dead URL on every refresh and duplicated.
+                altStoreSource = legacySource
             }
             else
             {
@@ -373,6 +382,14 @@ private extension DatabaseManager
             
             // Make sure to always update source URL to be current.
             try! altStoreSource.setSourceURL(Source.altStoreSourceURL)
+            
+            // Clean up any leftover sources still pinned to the dead GitHub releases URL so they
+            // are never fetched (and time out) again on future refreshes.
+            let deadSourceURLString = "https://github.com/LiveContainer/LiveContainer/releases/download/1.0/apps_ss_lc.json"
+            for stale in Source.all(in: context) where stale != altStoreSource && stale.sourceURL.absoluteString == deadSourceURLString
+            {
+                context.delete(stale)
+            }
             
             let storeApp: StoreApp
             
