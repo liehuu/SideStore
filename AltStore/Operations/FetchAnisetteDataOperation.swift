@@ -316,8 +316,55 @@ final class FetchAnisetteDataOperation: ResultOperation<ALTAnisetteData>, WebSoc
                     let desc = error?.localizedDescription ?? "unknown error"
                     throw OperationError.anisetteV1Error(message: "Unable to fetch data (\(desc))")
                 }
-                
-                try self.extractAnisetteData(data, response as? HTTPURLResponse, v3: false)
+
+                do {
+                    try self.extractAnisetteData(data, response as? HTTPURLResponse, v3: false)
+                } catch {
+                    // The response body wasn't valid JSON. Classic V1 anisette
+                    // servers return the anisette data in response HEADERS
+                    // instead of a JSON body; fall back to reading the headers
+                    // (case-insensitively, since HTTP/2 lowercases them).
+                    guard let httpResponse = response as? HTTPURLResponse else {
+                        self.printOut("Failed to load: \(error.localizedDescription)")
+                        self.finish(.failure(error as NSError))
+                        return
+                    }
+                    self.printOut("V1 body not JSON (\(error.localizedDescription)); falling back to response headers")
+
+                    // Canonical key casing the parser expects.
+                    let canonicalKeys = [
+                        "x-apple-i-md": "X-Apple-I-MD",
+                        "x-apple-i-md-m": "X-Apple-I-MD-M",
+                        "x-apple-i-md-lu": "X-Apple-I-MD-LU",
+                        "x-apple-i-md-rinfo": "X-Apple-I-MD-RINFO",
+                        "x-apple-i-srl-no": "X-Apple-I-SRL-NO",
+                        "x-apple-i-client-time": "X-Apple-I-Client-Time",
+                        "x-apple-i-timezone": "X-Apple-I-TimeZone",
+                        "x-apple-locale": "X-Apple-Locale",
+                        "x-mme-client-info": "X-MMe-Client-Info",
+                        "x-mme-device-id": "X-Mme-Device-Id",
+                    ]
+                    var headerJSON: [String: String] = [:]
+                    for (rawKey, rawValue) in httpResponse.allHeaderFields {
+                        guard let key = rawKey as? String, let value = rawValue as? String else { continue }
+                        let canonical = canonicalKeys[key.lowercased()] ?? key
+                        headerJSON[canonical] = value
+                    }
+                    guard headerJSON["X-Apple-I-MD"] != nil,
+                          headerJSON["X-Apple-I-MD-M"] != nil else {
+                        // No anisette data in headers either; surface original error.
+                        self.printOut("Failed to load: \(error.localizedDescription)")
+                        self.finish(.failure(error as NSError))
+                        return
+                    }
+                    do {
+                        let headerData = try JSONSerialization.data(withJSONObject: headerJSON)
+                        try self.extractAnisetteData(headerData, httpResponse, v3: false)
+                    } catch let headerError as NSError {
+                        self.printOut("Failed to load (header fallback): \(headerError.localizedDescription)")
+                        self.finish(.failure(headerError))
+                    }
+                }
             } catch let error as NSError {
                 self.printOut("Failed to load: \(error.localizedDescription)")
                 self.finish(.failure(error))
@@ -616,24 +663,29 @@ final class FetchAnisetteDataOperation: ResultOperation<ALTAnisetteData>, WebSoc
     
     // MARK: - Client info sanitization
 
-    /// Since early September 2026, Apple's GSA edge returns HTTP 503 for any
-    /// request whose `X-MMe-Client-Info` header contains the substring
-    /// `com.apple.dt.Xcode` (hardcoded by many anisette servers). Replace it
-    /// with `com.apple.akd`, the daemon that actually performs these requests
-    /// on macOS, so the request reaches the auth service instead of being
-    /// dropped at the edge.
+    /// Since early September 2026, Apple's GSA edge rejects (HTTP 503, non-plist
+    /// error body) requests whose `X-MMe-Client-Info` carries the stale Xcode-era
+    /// client string that anisette servers still serve. Merely replacing the
+    /// `com.apple.dt.Xcode/x.y.z` substring while keeping the old machine/OS
+    /// string (e.g. `<MacBookPro13,2> <macOS;13.1;22C65>`) is NOT enough — the
+    /// stale machine + OS combination is blocked as well.
     ///
-    /// Mirrors:
-    ///   - isideload a19f5f0 "Fix GSA 503: replace blocked Xcode client identifier with akd"
-    ///   - AltStore #1790 "Fix Apple ID sign-in failing with HTTP 503"
+    /// Both working references hardcode a *current* client string locally and
+    /// ignore whatever the anisette server sends:
+    ///   - isideload a19f5f0 / PR#11: "<Mac15,7> <macOS;27.0;26A5378j> <com.apple.AuthKit/1 (com.apple.akd/1.0)>"
+    ///   - SideStore AnisetteKit:    "<MacBookPro18,3> <macOS;26.6;25F84> <com.apple.AuthKit/1 (com.apple.akd/1.0)>"
+    ///
+    /// We pin the official AnisetteKit string. The anisette OTP headers
+    /// (X-Apple-I-MD etc.) are bound to the machine identifier, not to this
+    /// header, so swapping it client-side is safe.
+    static let pinnedClientInfo = "<MacBookPro18,3> <macOS;26.6;25F84> <com.apple.AuthKit/1 (com.apple.akd/1.0)>"
+
     func sanitizeClientInfo(_ clientInfo: String) -> String {
-        let pattern = #"com\.apple\.dt\.Xcode/[0-9.]+"#
-        guard clientInfo.range(of: pattern, options: .regularExpression) != nil else {
+        guard clientInfo != FetchAnisetteDataOperation.pinnedClientInfo else {
             return clientInfo
         }
-        let sanitized = clientInfo.replacingOccurrences(of: pattern, with: "com.apple.akd/1.0", options: .regularExpression)
-        self.printOut("Sanitized blocked Xcode client identifier → akd: \(sanitized)")
-        return sanitized
+        self.printOut("Replacing server client-info \"\(clientInfo)\" → pinned akd string (official AnisetteKit value)")
+        return FetchAnisetteDataOperation.pinnedClientInfo
     }
 
     private func printOut(_ text: String?){
