@@ -793,14 +793,44 @@ final class FetchAnisetteDataOperation: ResultOperation<ALTAnisetteData>, WebSoc
     /// POSTing a real SRP init plist to gsService2 and varying only the header:
     ///   <...> <macOS;12.0;...> and every newer macOS  → 503 + HTML error page
     ///   <...> <macOS;11.7;...>                        → 200 + usable plist
-    ///   <iPhone OS;17.5/18.5/26.0>                    → 200 + usable plist
-    /// The previous pin was "<MacBookPro18,3> <macOS;26.6;25F84> ...", so the
-    /// exact string shipped in 7649c8ff is now rejected. Machine model is
-    /// irrelevant (iMac21,1 / Mac14,2 behave the same); only the OS family and
-    /// major version matter. Use the device's own iOS identity — this is a
-    /// sideloading tool running on an iPhone, which also keeps the header
-    /// consistent with the hardware Apple sees in the request.
-    static let pinnedClientInfo = "<iPhone14,5> <iPhone OS;18.5;22F76> <com.apple.AuthKit/1 (com.apple.akd/1.0)>"
+    ///   <...> <Mac OS X;...> (any version)            → 200 + usable plist
+    ///   <...> <iPhone OS;17.5/18.5>                   → 200 + usable plist
+    ///
+    /// The token that matters is the *family*, not the version: `macOS;` is
+    /// rejected from 12.0 upwards, while the older spelling `Mac OS X;` passes
+    /// at any version. The string shipped in 7649c8ff was
+    /// "<MacBookPro18,3> <macOS;26.6;25F84> ...", so it lands squarely in the
+    /// blocked bucket — the 503 HTML page is what the plist parser then chokes
+    /// on, surfacing as NSCocoaErrorDomain 3840 ("The data couldn't be read
+    /// because it isn't in the correct format.").
+    ///
+    /// Keep the model and OS version from the official AnisetteKit string and
+    /// change only the family token. This is the same one-word change users
+    /// confirmed in SideStore#1745 / #1749 / #1752, and it is what iloader
+    /// settled on after rolling back its `macOS;27.0` override
+    /// (nab138/iloader 7364ae6).
+    ///
+    /// Changing this string invalidates any cached adi.pb, because adi.pb is
+    /// provisioned against the identity presented at provisioning time. A
+    /// stale pair fails Apple's late identity check with -22410 (mapped in
+    /// ALTAppleAPI+Authentication.swift), which is why that error is reported
+    /// as "reset adi.pb" rather than as a credential problem.
+    static let pinnedClientInfo = "<MacBookPro18,3> <Mac OS X;26.6;25F84> <com.apple.AuthKit/1 (com.apple.akd/1.0)>"
+
+    /// Rewrites a `macOS;` family token to the older `Mac OS X;` spelling.
+    ///
+    /// Anisette servers keep serving client strings that still say `macOS;`
+    /// (ani.sidestore.zip reports `<MacBookPro13,2> <macOS;13.1;22C65> ...`),
+    /// and Apple's edge rejects that family outright — the response is an HTML
+    /// 503 page, which then fails plist parsing as NSCocoaErrorDomain 3840.
+    /// Normalising the token rather than overwriting the whole string keeps the
+    /// model and OS version the server provisioned against.
+    static func normalizeClientInfo(_ clientInfo: String) -> String {
+        // Match only the versioned family token, so a stray "macOS" elsewhere
+        // in the string is not rewritten.
+        guard clientInfo.contains("<macOS;") else { return clientInfo }
+        return clientInfo.replacingOccurrences(of: "<macOS;", with: "<Mac OS X;")
+    }
 
     // If Apple blocks this string the same way it blocked the macOS 26 one,
     // replace `pinnedClientInfo` above with a verified alternative. Checked
@@ -813,10 +843,17 @@ final class FetchAnisetteDataOperation: ResultOperation<ALTAnisetteData>, WebSoc
     // the header but the request was still rejected downstream.
 
     func sanitizeClientInfo(_ clientInfo: String) -> String {
-        guard clientInfo != FetchAnisetteDataOperation.pinnedClientInfo else {
-            return clientInfo
+        // Normalise first: a server-supplied `macOS;` string is just as blocked
+        // as the old pinned value, so it must never reach the wire as-is.
+        let normalized = FetchAnisetteDataOperation.normalizeClientInfo(clientInfo)
+        if normalized != clientInfo {
+            self.printOut("Rewrote blocked macOS family in server client-info \"\(clientInfo)\" → \"\(normalized)\"")
         }
-        self.printOut("Replacing server client-info \"\(clientInfo)\" → pinned akd string (official AnisetteKit value)")
+
+        guard normalized != FetchAnisetteDataOperation.pinnedClientInfo else {
+            return normalized
+        }
+        self.printOut("Replacing server client-info \"\(normalized)\" → pinned akd string (official AnisetteKit value)")
         return FetchAnisetteDataOperation.pinnedClientInfo
     }
 
