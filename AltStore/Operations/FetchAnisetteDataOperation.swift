@@ -66,6 +66,49 @@ final class FetchAnisetteDataOperation: ResultOperation<ALTAnisetteData>, WebSoc
             self.url = url
             self.printOut("Anisette URL: \(self.url!.absoluteString)")
 
+            // FIX(gsa-22410-stale-adipb): adi.pb is provisioned *against the
+            // client-info identity that was presented at provisioning time*.
+            // Changing `pinnedClientInfo` therefore strands every cached
+            // adi.pb: the identity Apple has on file for this device no longer
+            // matches the header we now send, and the sign-in fails with
+            // -22410 ("This action could not be completed") *after* both the
+            // anisette and the account have been accepted, so retrying and
+            // re-entering the password can never help.
+            //
+            // The published remedy is Settings → User Customizations → Reset
+            // adi.pb. Making the user find that menu after every identity
+            // change is a poor trade, so record which identity the cached
+            // adi.pb belongs to and drop it automatically when that identity
+            // is no longer the one we send.
+            //
+            // Only adi.pb is cleared, not `identifier`: identifier seeds
+            // X-Apple-I-MD-LU / X-Mme-Device-Id and should stay stable across
+            // re-provisioning, which is also what the manual "Reset adi.pb"
+            // button does (verified in AnisetteServerList.swift).
+            //
+            // An identifier regeneration (the invalid-base64 branch in
+            // fetchClientInfo) does not need its own check here: that path
+            // already produces -45061 ("not provisioned") on the next fetch,
+            // and -45061 is handled by dropping adi.pb further down.
+            let provisionedClientInfo = UserDefaults.standard.string(forKey: FetchAnisetteDataOperation.provisionedClientInfoKey)
+            if Keychain.shared.adiPb != nil,
+               provisionedClientInfo != FetchAnisetteDataOperation.pinnedClientInfo {
+                self.printOut("Cached adi.pb was provisioned for client-info \"\(provisionedClientInfo ?? "<unknown>")\", but we now send \"\(FetchAnisetteDataOperation.pinnedClientInfo)\" → discarding adi.pb and re-provisioning")
+                Keychain.shared.adiPb = nil
+
+                // Re-provisioning mints a new machineID, and Apple binds the
+                // session token to the machineID used at sign-in time. Keeping
+                // the old session would fail every authenticated request with
+                // 1100 ("Your session has expired"), so drop it and let the
+                // caller sign in again against the new identity.
+                if Keychain.shared.session != nil {
+                    self.printOut("Discarding cached session: its token is bound to the previous machineID")
+                    Keychain.shared.session = nil
+                    Keychain.shared.certificate = nil
+                    Keychain.shared.team = nil
+                }
+            }
+
             if let identifier = Keychain.shared.identifier,
                let adiPb = Keychain.shared.adiPb {
                 self.fetchAnisetteV3(identifier, adiPb)
@@ -569,6 +612,11 @@ final class FetchAnisetteDataOperation: ResultOperation<ALTAnisetteData>, WebSoc
                             return
                         }
                         Keychain.shared.adiPb = adiPb
+                        // Record which client-info this adi.pb was provisioned
+                        // against, so a later pin change drops it instead of
+                        // sending a stale identity pair to Apple.
+                        UserDefaults.standard.set(FetchAnisetteDataOperation.pinnedClientInfo,
+                                                  forKey: FetchAnisetteDataOperation.provisionedClientInfoKey)
                         guard let identifier = Keychain.shared.identifier,
                               let storedAdiPb = Keychain.shared.adiPb else {
                             self.printOut("Identifier/adiPb missing after provisioning → falling back to V1")
@@ -815,7 +863,37 @@ final class FetchAnisetteDataOperation: ResultOperation<ALTAnisetteData>, WebSoc
     /// stale pair fails Apple's late identity check with -22410 (mapped in
     /// ALTAppleAPI+Authentication.swift), which is why that error is reported
     /// as "reset adi.pb" rather than as a credential problem.
-    static let pinnedClientInfo = "<MacBookPro18,3> <Mac OS X;26.6;25F84> <com.apple.AuthKit/1 (com.apple.akd/1.0)>"
+    /// FIX(gsa-22410-family): pin back to the `iPhone OS;` family.
+    ///
+    /// 274b6bcc pinned `<MacBookPro18,3> <Mac OS X;26.6;25F84> ...`, which
+    /// clears the edge (HTTP 200, so no more 3840) but is then rejected by a
+    /// *late* identity check with -22410 — the same second-stage rejection
+    /// SideStore#1745 records for the `Mac OS X;` family ("the old Mac OS X;
+    /// 10.12.6 identity passed validation, but Apple then rejected it with
+    /// -22410 or -23782").
+    ///
+    /// So `Mac OS X;` is not a safe pin even though it fixes the 503: it moves
+    /// the failure from the edge to the post-anisette check, where it surfaces
+    /// as "This action could not be completed".
+    ///
+    /// `<iPhone OS;>` is the family the user confirmed can actually sign in
+    /// (build 9f2253db, which pinned exactly this string). Verified 2026-11-25
+    /// against gsService2 with a real SRP init: `iPhone OS;18.5` and
+    /// `iPhone OS;26.0` both return HTTP 200 with `ec=-1`, identical to the
+    /// control — i.e. no edge rejection and no late family rejection, which is
+    /// the best a probe can show without real credentials.
+    ///
+    /// Keep the model/version verbatim from 9f2253db rather than inventing a
+    /// new combination: that exact string is the one with a field confirmation
+    /// behind it.
+    static let pinnedClientInfo = "<iPhone14,5> <iPhone OS;18.5;22F76> <com.apple.AuthKit/1 (com.apple.akd/1.0)>"
+
+    /// Records which client-info the cached adi.pb was provisioned against.
+    ///
+    /// Stored in UserDefaults rather than the Keychain: it is not a secret, and
+    /// a missing value simply means the cached adi.pb predates this marker and
+    /// should be discarded once.
+    static let provisionedClientInfoKey = "FetchAnisetteDataOperation.provisionedClientInfo"
 
     /// Rewrites a `macOS;` family token to the older `Mac OS X;` spelling.
     ///

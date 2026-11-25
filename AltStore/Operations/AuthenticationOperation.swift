@@ -469,7 +469,27 @@ private extension AuthenticationOperation
     func authenticate(appleID: String, password: String, completionHandler: @escaping (Result<(ALTAccount, ALTAppleAPISession), Swift.Error>) -> Void)
     {
         self.appleIDEmailAddress = appleID
-        
+
+        // FIX(gsa-22410-retry): -22410 means Apple accepted the anisette and
+        // the account but rejected the *pairing* between them — the adi.pb on
+        // file was provisioned under a different device identity than the one
+        // this request presents. FetchAnisetteDataOperation already drops a
+        // stale adi.pb when it detects an identity change, but that check only
+        // covers identities written by this build. A user upgrading from an
+        // older build can still hold an adi.pb with no recorded marker whose
+        // provisioning identity differs from ours for other reasons (an
+        // anisette server that re-provisioned behind the same URL, a partially
+        // failed earlier attempt). In that case the first sign-in is the only
+        // place the mismatch becomes visible.
+        //
+        // Retry once with a freshly provisioned identity. A second -22410 is
+        // surfaced unchanged: at that point re-provisioning has already been
+        // attempted and looping would just reproduce the same state.
+        self.authenticateOnce(appleID: appleID, password: password, allowAnisetteRecovery: true, completionHandler: completionHandler)
+    }
+
+    func authenticateOnce(appleID: String, password: String, allowAnisetteRecovery: Bool, completionHandler: @escaping (Result<(ALTAccount, ALTAppleAPISession), Swift.Error>) -> Void)
+    {
         let fetchAnisetteDataOperation = FetchAnisetteDataOperation(context: self.context)
         fetchAnisetteDataOperation.resultHandler = { (result) in
             switch result
@@ -530,6 +550,33 @@ private extension AuthenticationOperation
                         Keychain.shared.appleIDXcodeToken = session.authToken
                         completionHandler(.success((account, session)))
                     }
+                    else if allowAnisetteRecovery, let error = error, Self.isLateIdentityRejection(error)
+                    {
+                        // -22410 / -23782 are late identity rejections. The usual
+                        // cause is the pinned client-info family (the build that
+                        // shipped Mac OS X; hit exactly this), but they can also
+                        // mean the cached adi.pb was provisioned under a
+                        // different identity — e.g. the user changed anisette
+                        // server between attempts.
+                        //
+                        // Clearing adi.pb is cheap (it is re-provisioned on the
+                        // next anisette fetch) and is the one remedy that works
+                        // for the stale-pair case, so do it once and retry. If
+                        // the second attempt fails the same way it is the
+                        // identity itself, and the error message should say so
+                        // rather than sending the user round the same loop.
+                        Logger.sideload.notice("Sign-in hit a late identity rejection; discarding adi.pb and retrying once")
+                        Keychain.shared.adiPb = nil
+                        Keychain.shared.session = nil
+                        Keychain.shared.certificate = nil
+                        Keychain.shared.team = nil
+                        UserDefaults.standard.removeObject(forKey: FetchAnisetteDataOperation.provisionedClientInfoKey)
+
+                        self.authenticateOnce(appleID: appleID,
+                                              password: password,
+                                              allowAnisetteRecovery: false,
+                                              completionHandler: completionHandler)
+                    }
                     else
                     {
                         completionHandler(.failure(error ?? OperationError.unknown()))
@@ -539,6 +586,18 @@ private extension AuthenticationOperation
         }
         
         self.operationQueue.addOperation(fetchAnisetteDataOperation)
+    }
+
+    /// True when `error` is one of GrandSlam's late device-identity rejections.
+    ///
+    /// Matched on the numeric code rather than the message: the message is a
+    /// remediation hint we generate ourselves, so keying the retry off it would
+    /// break the moment the wording changes.
+    static func isLateIdentityRejection(_ error: Error) -> Bool
+    {
+        let nsError = error as NSError
+        guard nsError.domain == ALTUnderlyingAppleAPIErrorDomain else { return false }
+        return nsError.code == -22410 || nsError.code == -23782
     }
     
     func fetchTeam(for account: ALTAccount, session: ALTAppleAPISession, completionHandler: @escaping (Result<ALTTeam, Swift.Error>) -> Void)
