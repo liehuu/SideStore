@@ -145,7 +145,10 @@ public extension UserDefaults
             #keyPath(UserDefaults.localServerSupportsRefreshing): localServerSupportsRefreshing,
             #keyPath(UserDefaults.requiresAppGroupMigration): true,
             #keyPath(UserDefaults.menuAnisetteList): "https://servers.sidestore.io/servers.json",
-            #keyPath(UserDefaults.menuAnisetteURL): "https://ani.sidestore.io",
+            // FIX(ani-80043-match): the old default is dead (HTTP 500/502 on
+            // 2026-11-25). Start on SideStore's Mac server, which provisioned a
+            // fresh identity and passed Apple's GSA check in a full probe.
+            #keyPath(UserDefaults.menuAnisetteURL): "https://new.ani.sidestore.io",
             #keyPath(UserDefaults.isCowExploitSupported): isMacDirtyCowSupported,
             #keyPath(UserDefaults.permissionCheckingDisabled): permissionCheckingDisabled,
             #keyPath(UserDefaults._preferredAppSorting): preferredAppSorting.rawValue,

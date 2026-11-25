@@ -27,6 +27,11 @@ final class FetchAnisetteDataOperation: ResultOperation<ALTAnisetteData>, WebSoc
     
     var clientInfo: String?
     var userAgent: String?
+
+    /// The user agent declared by the selected anisette server. GrandSlam
+    /// requires the sign-in UA to match the client that minted the anisette;
+    /// AuthenticationOperation forwards this to AltSign.
+    private(set) var serverUserAgent: String?
     
     var mdLu: String?
     var deviceId: String?
@@ -35,7 +40,19 @@ final class FetchAnisetteDataOperation: ResultOperation<ALTAnisetteData>, WebSoc
     // virtual devices; count retries while trying to match the machineID
     // bound to the cached session token.
     private var v1MachineIDRetryCount = 0
-    
+
+    // FIX(ani-80043-rotate): servers that answered fine but whose anisette
+    // Apple then rejected (-80043 / -80044). Reaching a server only proves it
+    // is *up*; it does not prove Apple still accepts the machine identity it
+    // mints. ani.sidestore.zip and ani.npeg.us both serve the same rejected
+    // device id (8ABE1294-…), so a reachability-only rotation can hand the user
+    // a server that always fails and never move on.
+    // Guards the rotation below: a server rejection restarts the whole
+    // main() flow, which would otherwise re-enter with a fresh
+    // rejectedServers set and pick the same dead server forever.
+    private static var rejectedServersForSession: Set<String> = []
+    private static let rejectedServersLock = NSLock()
+
     init(context: OperationContext)
     {
         self.context = context
@@ -90,10 +107,15 @@ final class FetchAnisetteDataOperation: ResultOperation<ALTAnisetteData>, WebSoc
             // fetchClientInfo) does not need its own check here: that path
             // already produces -45061 ("not provisioned") on the next fetch,
             // and -45061 is handled by dropping adi.pb further down.
-            let provisionedClientInfo = UserDefaults.standard.string(forKey: FetchAnisetteDataOperation.provisionedClientInfoKey)
+            // FIX(ani-80043-match): adi.pb is provisioned against a specific
+            // anisette server's identity (client-info + UA). When the selected
+            // server changes — including the automatic rotation after Apple
+            // rejects one — the cached adi.pb belongs to the old server and
+            // must be re-provisioned, or Apple rejects the stale pairing.
+            let provisionedServer = UserDefaults.standard.string(forKey: FetchAnisetteDataOperation.provisionedClientInfoKey)
             if Keychain.shared.adiPb != nil,
-               provisionedClientInfo != FetchAnisetteDataOperation.pinnedClientInfo {
-                self.printOut("Cached adi.pb was provisioned for client-info \"\(provisionedClientInfo ?? "<unknown>")\", but we now send \"\(FetchAnisetteDataOperation.pinnedClientInfo)\" → discarding adi.pb and re-provisioning")
+               provisionedServer != urlString {
+                self.printOut("Cached adi.pb was provisioned by \"\(provisionedServer ?? "<unknown>")\", but we now use \"\(urlString)\" → discarding adi.pb and re-provisioning")
                 Keychain.shared.adiPb = nil
 
                 // Re-provisioning mints a new machineID, and Apple binds the
@@ -139,8 +161,44 @@ final class FetchAnisetteDataOperation: ResultOperation<ALTAnisetteData>, WebSoc
             serverUrls.remove(at: currentServerIndex)
             serverUrls.insert(currentServer, at: 0)
         }
-        
+
+        // FIX(ani-80043-rotate): hide servers whose anisette Apple already
+        // rejected, so a retry lands on a different one instead of the same
+        // dead identity. If that would leave nothing, drop the exclusions —
+        // a rejected server is still better than no server at all, and Apple
+        // may have re-accepted it since.
+        let excluded = FetchAnisetteDataOperation.rejectedServerSnapshot()
+        let remaining = serverUrls.filter { !excluded.contains($0) }
+        if !remaining.isEmpty {
+            serverUrls = remaining
+        } else if !excluded.isEmpty {
+            self.printOut("Every known server has been rejected by Apple at least once; retrying them all rather than failing outright")
+        }
+
         tryNextServer(from: serverUrls, viewContext, currentIndex: 0, completion: completion)
+    }
+
+    // MARK: - Rejected-server bookkeeping
+
+    static func rejectedServerSnapshot() -> Set<String>
+    {
+        FetchAnisetteDataOperation.rejectedServersLock.lock()
+        defer { FetchAnisetteDataOperation.rejectedServersLock.unlock() }
+        return FetchAnisetteDataOperation.rejectedServersForSession
+    }
+
+    static func markServerRejected(_ urlString: String)
+    {
+        FetchAnisetteDataOperation.rejectedServersLock.lock()
+        defer { FetchAnisetteDataOperation.rejectedServersLock.unlock() }
+        FetchAnisetteDataOperation.rejectedServersForSession.insert(urlString)
+    }
+
+    static func clearRejectedServers()
+    {
+        FetchAnisetteDataOperation.rejectedServersLock.lock()
+        defer { FetchAnisetteDataOperation.rejectedServersLock.unlock() }
+        FetchAnisetteDataOperation.rejectedServersForSession.removeAll()
     }
     
     private func showToast(viewContext: UIViewController?, message: String){
@@ -612,10 +670,10 @@ final class FetchAnisetteDataOperation: ResultOperation<ALTAnisetteData>, WebSoc
                             return
                         }
                         Keychain.shared.adiPb = adiPb
-                        // Record which client-info this adi.pb was provisioned
-                        // against, so a later pin change drops it instead of
-                        // sending a stale identity pair to Apple.
-                        UserDefaults.standard.set(FetchAnisetteDataOperation.pinnedClientInfo,
+                        // Record which server provisioned this adi.pb. The
+                        // identity (client-info + UA) comes from that server,
+                        // so switching servers must re-provision.
+                        UserDefaults.standard.set(self.url?.absoluteString,
                                                   forKey: FetchAnisetteDataOperation.provisionedClientInfoKey)
                         guard let identifier = Keychain.shared.identifier,
                               let storedAdiPb = Keychain.shared.adiPb else {
@@ -732,6 +790,7 @@ final class FetchAnisetteDataOperation: ResultOperation<ALTAnisetteData>, WebSoc
                             return
                         }
                         self.userAgent = userAgent
+                        self.serverUserAgent = userAgent
                         self.printOut("Client-Info: \(clientInfo)")
                         self.printOut("User-Agent: \(userAgent)")
                         
@@ -888,11 +947,13 @@ final class FetchAnisetteDataOperation: ResultOperation<ALTAnisetteData>, WebSoc
     /// behind it.
     static let pinnedClientInfo = "<iPhone14,5> <iPhone OS;18.5;22F76> <com.apple.AuthKit/1 (com.apple.akd/1.0)>"
 
-    /// Records which client-info the cached adi.pb was provisioned against.
+    /// Records which anisette server provisioned the cached adi.pb.
     ///
-    /// Stored in UserDefaults rather than the Keychain: it is not a secret, and
-    /// a missing value simply means the cached adi.pb predates this marker and
-    /// should be discarded once.
+    /// The identity (client-info + UA) is declared by that server, so a cached
+    /// adi.pb is only valid with the server that minted it. A missing value
+    /// means the adi.pb predates this marker and should be discarded once.
+    /// The key name is kept for compatibility with builds that wrote a client
+    /// string into it — any such value differs from a URL and is discarded.
     static let provisionedClientInfoKey = "FetchAnisetteDataOperation.provisionedClientInfo"
 
     /// Rewrites a `macOS;` family token to the older `Mac OS X;` spelling.
@@ -921,18 +982,27 @@ final class FetchAnisetteDataOperation: ResultOperation<ALTAnisetteData>, WebSoc
     // the header but the request was still rejected downstream.
 
     func sanitizeClientInfo(_ clientInfo: String) -> String {
-        // Normalise first: a server-supplied `macOS;` string is just as blocked
-        // as the old pinned value, so it must never reach the wire as-is.
+        // FIX(ani-80043-match): send the identity the anisette server declares.
+        //
+        // Apple's GrandSlam edge checks that X-MMe-Client-Info matches the
+        // client that actually generated the anisette data (AltSign PR #61).
+        // Overwriting the server's value with a hardcoded `iPhone OS;` string
+        // breaks that pairing: provisioning then fails with HTTP 401 at
+        // finishMachineProvisioning, the client falls back to the shared V1
+        // endpoint, and Apple rejects that identity with -80043.
+        //
+        // Verified 2026-11-25 with a full provisioning + GSA probe against all
+        // 22 servers: the same server and identifier succeed with its own
+        // client-info but fail 401 with the hardcoded `iPhone OS;` value.
+        //
+        // Only the blocked `macOS;` family token is rewritten. The model and
+        // OS version are kept exactly as the server provisioned against, and
+        // the matching User-Agent is forwarded to AltSign by the caller.
         let normalized = FetchAnisetteDataOperation.normalizeClientInfo(clientInfo)
         if normalized != clientInfo {
             self.printOut("Rewrote blocked macOS family in server client-info \"\(clientInfo)\" → \"\(normalized)\"")
         }
-
-        guard normalized != FetchAnisetteDataOperation.pinnedClientInfo else {
-            return normalized
-        }
-        self.printOut("Replacing server client-info \"\(normalized)\" → pinned akd string (official AnisetteKit value)")
-        return FetchAnisetteDataOperation.pinnedClientInfo
+        return normalized
     }
 
     private func printOut(_ text: String?){

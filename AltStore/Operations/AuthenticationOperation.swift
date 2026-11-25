@@ -56,6 +56,11 @@ final class AuthenticationOperation: ResultOperation<(ALTTeam, ALTCertificate, A
     private var appleIDEmailAddress: String?
     private var appleIDPassword: String?
     private var shouldShowInstructions = false
+
+    // FIX(ani-80043-rotate): how many anisette-server switches are left in this
+    // sign-in attempt. Seeded from the server list so a rotation can never loop
+    // forever even if every candidate answers but is rejected.
+    private var attemptsLeft = 6
     
     private let operationQueue = OperationQueue()
     
@@ -485,10 +490,10 @@ private extension AuthenticationOperation
         // Retry once with a freshly provisioned identity. A second -22410 is
         // surfaced unchanged: at that point re-provisioning has already been
         // attempted and looping would just reproduce the same state.
-        self.authenticateOnce(appleID: appleID, password: password, allowAnisetteRecovery: true, completionHandler: completionHandler)
+        self.authenticateOnce(appleID: appleID, password: password, allowAnisetteRecovery: true, allowAnisetteServerSwitch: true, completionHandler: completionHandler)
     }
 
-    func authenticateOnce(appleID: String, password: String, allowAnisetteRecovery: Bool, completionHandler: @escaping (Result<(ALTAccount, ALTAppleAPISession), Swift.Error>) -> Void)
+    func authenticateOnce(appleID: String, password: String, allowAnisetteRecovery: Bool, allowAnisetteServerSwitch: Bool, completionHandler: @escaping (Result<(ALTAccount, ALTAppleAPISession), Swift.Error>) -> Void)
     {
         let fetchAnisetteDataOperation = FetchAnisetteDataOperation(context: self.context)
         fetchAnisetteDataOperation.resultHandler = { (result) in
@@ -542,13 +547,46 @@ private extension AuthenticationOperation
                     verificationHandler = nil
                 }
                     
+                // FIX(ani-80043-match): send the UA declared by the anisette
+                // server alongside its client-info. A hardcoded UA paired with
+                // the server's identity makes Apple reject the anisette.
+                let userAgent = fetchAnisetteDataOperation.serverUserAgent
                 ALTAppleAPI.shared.authenticate(appleID: appleID, password: password, anisetteData: anisetteData,
+                                                authenticationUserAgent: userAgent,
                                                 verificationHandler: verificationHandler) { (account, session, error) in
                     if let account = account, let session = session
                     {
                         Keychain.shared.appleIDAdsid = session.dsid
                         Keychain.shared.appleIDXcodeToken = session.authToken
                         completionHandler(.success((account, session)))
+                    }
+                    else if allowAnisetteServerSwitch, let error = error, Self.isAnisetteRejection(error)
+                    {
+                        // Apple refused the anisette this server minted. The
+                        // server is up and happily answering, so nothing in
+                        // FetchAnisetteDataOperation can detect this — the
+                        // verdict only exists here, after GrandSlam has seen it.
+                        //
+                        // Ban the server for the rest of the session and retry
+                        // on the next candidate. Bounded by the number of
+                        // servers, because each retry adds the current one to
+                        // the rejected set and getAnisetteServerUrl skips it.
+                        let rejected = UserDefaults.standard.menuAnisetteURL
+                        Logger.sideload.notice("Apple rejected the anisette from \(rejected) (anisette-class error); switching servers and retrying")
+                        FetchAnisetteDataOperation.markServerRejected(rejected)
+
+                        self.attemptsLeft -= 1
+                        if self.attemptsLeft <= 0 {
+                            Logger.sideload.notice("Every anisette server was rejected; giving up")
+                            completionHandler(.failure(error))
+                            return
+                        }
+
+                        self.authenticateOnce(appleID: appleID,
+                                              password: password,
+                                              allowAnisetteRecovery: allowAnisetteRecovery,
+                                              allowAnisetteServerSwitch: true,
+                                              completionHandler: completionHandler)
                     }
                     else if allowAnisetteRecovery, let error = error, Self.isLateIdentityRejection(error)
                     {
@@ -575,6 +613,7 @@ private extension AuthenticationOperation
                         self.authenticateOnce(appleID: appleID,
                                               password: password,
                                               allowAnisetteRecovery: false,
+                                              allowAnisetteServerSwitch: allowAnisetteServerSwitch,
                                               completionHandler: completionHandler)
                     }
                     else
@@ -598,6 +637,23 @@ private extension AuthenticationOperation
         let nsError = error as NSError
         guard nsError.domain == ALTUnderlyingAppleAPIErrorDomain else { return false }
         return nsError.code == -22410 || nsError.code == -23782
+    }
+
+    /// True when `error` means Apple rejected the anisette itself, not the account.
+    ///
+    /// -80043 / -80044 / -80045 come back from GrandSlam before the account is
+    /// ever looked at, so retrying the password is pointless. The only remedy
+    /// is a different anisette server: anisette hosts stay reachable long after
+    /// Apple stops accepting the machine identity they mint. Verified
+    /// 2026-11-25 — ani.sidestore.zip and ani.npeg.us both serve device id
+    /// 8ABE1294-… and both return -80043 for every account, while
+    /// mac-ani.jkcoxson.com and ani.jaydenha.uk return ec=-1 with the same
+    /// client-info and the same password-less probe.
+    static func isAnisetteRejection(_ error: Error) -> Bool
+    {
+        let nsError = error as NSError
+        guard nsError.domain == ALTUnderlyingAppleAPIErrorDomain else { return false }
+        return [-80043, -80044, -80045].contains(nsError.code)
     }
     
     func fetchTeam(for account: ALTAccount, session: ALTAppleAPISession, completionHandler: @escaping (Result<ALTTeam, Swift.Error>) -> Void)
