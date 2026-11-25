@@ -787,7 +787,30 @@ final class FetchAnisetteDataOperation: ResultOperation<ALTAnisetteData>, WebSoc
     /// We pin the official AnisetteKit string. The anisette OTP headers
     /// (X-Apple-I-MD etc.) are bound to the machine identifier, not to this
     /// header, so swapping it client-side is safe.
-    static let pinnedClientInfo = "<MacBookPro18,3> <macOS;26.6;25F84> <com.apple.AuthKit/1 (com.apple.akd/1.0)>"
+    ///
+    /// FIX(gsa-503-2026-11): Apple started 503-ing the macOS 12+ client-info
+    /// family on the GrandSlam edge around 2026-11. Verified 2026-11-25 by
+    /// POSTing a real SRP init plist to gsService2 and varying only the header:
+    ///   <...> <macOS;12.0;...> and every newer macOS  → 503 + HTML error page
+    ///   <...> <macOS;11.7;...>                        → 200 + usable plist
+    ///   <iPhone OS;17.5/18.5/26.0>                    → 200 + usable plist
+    /// The previous pin was "<MacBookPro18,3> <macOS;26.6;25F84> ...", so the
+    /// exact string shipped in 7649c8ff is now rejected. Machine model is
+    /// irrelevant (iMac21,1 / Mac14,2 behave the same); only the OS family and
+    /// major version matter. Use the device's own iOS identity — this is a
+    /// sideloading tool running on an iPhone, which also keeps the header
+    /// consistent with the hardware Apple sees in the request.
+    static let pinnedClientInfo = "<iPhone14,5> <iPhone OS;18.5;22F76> <com.apple.AuthKit/1 (com.apple.akd/1.0)>"
+
+    // If Apple blocks this string the same way it blocked the macOS 26 one,
+    // replace `pinnedClientInfo` above with a verified alternative. Checked
+    // 2026-11-25 (each returned HTTP 200 + a parseable GrandSlam plist):
+    //   "<iPhone14,5> <iPhone OS;17.5;21F79> <com.apple.AuthKit/1 (com.apple.akd/1.0)>"
+    //   "<MacBookPro15,1> <macOS;11.7;20G817> <com.apple.AuthKit/1 (com.apple.akd/1.0)>"
+    // Verify a candidate before shipping by POSTing an SRP init plist to
+    // https://gsa.apple.com/grandslam/GsService2 and requiring <key>Response</key>
+    // in the body — a bare HTTP 200 with an empty body means the edge accepted
+    // the header but the request was still rejected downstream.
 
     func sanitizeClientInfo(_ clientInfo: String) -> String {
         guard clientInfo != FetchAnisetteDataOperation.pinnedClientInfo else {
