@@ -956,19 +956,52 @@ final class FetchAnisetteDataOperation: ResultOperation<ALTAnisetteData>, WebSoc
     /// string into it — any such value differs from a URL and is discarded.
     static let provisionedClientInfoKey = "FetchAnisetteDataOperation.provisionedClientInfo"
 
-    /// Rewrites a `macOS;` family token to the older `Mac OS X;` spelling.
+    /// Rewrites the two client-info families Apple's GrandSlam edge refuses.
     ///
-    /// Anisette servers keep serving client strings that still say `macOS;`
-    /// (ani.sidestore.zip reports `<MacBookPro13,2> <macOS;13.1;22C65> ...`),
-    /// and Apple's edge rejects that family outright — the response is an HTML
-    /// 503 page, which then fails plist parsing as NSCocoaErrorDomain 3840.
-    /// Normalising the token rather than overwriting the whole string keeps the
-    /// model and OS version the server provisioned against.
+    /// Verified 2026-11-25 by POSTing a real SRP-init plist to
+    /// gsService2 with only the header varying (see `_503fix_assume.py`):
+    ///
+    ///   `<MacBookPro13,2> <macOS;13.1;22C65> <…(com.apple.dt.Xcode/3594.4.19)>` -> 503 HTML
+    ///   `<MacBookPro13,2> <Mac OS X;13.1;22C65> <…(com.apple.dt.Xcode/3594.4.19)>` -> 503 HTML
+    ///   `<MacBookPro13,2> <Mac OS X;13.1;22C65> <…(com.apple.akd/1.0)>`          -> 200 + ec=-1
+    ///
+    /// The 503 body is the HTML page AltSign reports as NSCocoaErrorDomain 3840.
+    /// Both blocked families are live in the server list: ani.sidestore.zip,
+    /// ani.npeg.us and ani.xu30.top all serve the `com.apple.dt.Xcode/…`
+    /// identifier, and ani.jaydenha.uk pairs it with a lowercase `macOS;` token.
+    ///
+    /// The model and OS version are preserved — Apple binds the adi.pb minted
+    /// during provisioning to the whole string, so inventing a combination
+    /// instead of fixing the blocked token breaks that pairing.
     static func normalizeClientInfo(_ clientInfo: String) -> String {
         // Match only the versioned family token, so a stray "macOS" elsewhere
         // in the string is not rewritten.
-        guard clientInfo.contains("<macOS;") else { return clientInfo }
-        return clientInfo.replacingOccurrences(of: "<macOS;", with: "<Mac OS X;")
+        let familyFixed = clientInfo.replacingOccurrences(of: "<macOS;", with: "<Mac OS X;")
+        return normalizeClientIdentifier(familyFixed)
+    }
+
+    /// Rewrites `com.apple.dt.Xcode/…` to `com.apple.akd/1.0` in the client
+    /// identifier (the third `<…>` field, e.g.
+    /// `<com.apple.AuthKit/1 (com.apple.dt.Xcode/3594.4.19)>`).
+    ///
+    /// Only the parenthesised bracketed identifier is replaced: the version
+    /// number is part of what the edge rejects, so it must not survive in the
+    /// output. Unbracketed or malformed text is left untouched rather than
+    /// guessed at, and other identifiers keep working unchanged.
+    private static func normalizeClientIdentifier(_ clientInfo: String) -> String {
+        let marker = "(com.apple.dt."
+        guard clientInfo.contains(marker) else { return clientInfo }
+
+        var result = clientInfo
+        // Replace every occurrence instead of assuming exactly one. Removing
+        // the marker each pass keeps the loop finite.
+        while true {
+            guard let open = result.range(of: marker),
+                  let close = result[open.upperBound...].firstIndex(of: ")") else { break }
+            let end = result.index(after: close)
+            result.replacingCharacters(in: open.lowerBound..<end, with: "(com.apple.akd/1.0)")
+        }
+        return result
     }
 
     // If Apple blocks this string the same way it blocked the macOS 26 one,
@@ -995,12 +1028,13 @@ final class FetchAnisetteDataOperation: ResultOperation<ALTAnisetteData>, WebSoc
         // 22 servers: the same server and identifier succeed with its own
         // client-info but fail 401 with the hardcoded `iPhone OS;` value.
         //
-        // Only the blocked `macOS;` family token is rewritten. The model and
+// Only the blocked families are rewritten — the lowercase `macOS;` token
+        // and the Xcode-era `com.apple.dt.Xcode/…` identifier. The model and
         // OS version are kept exactly as the server provisioned against, and
         // the matching User-Agent is forwarded to AltSign by the caller.
         let normalized = FetchAnisetteDataOperation.normalizeClientInfo(clientInfo)
         if normalized != clientInfo {
-            self.printOut("Rewrote blocked macOS family in server client-info \"\(clientInfo)\" → \"\(normalized)\"")
+            self.printOut("Rewrote blocked client-info family \"\(clientInfo)\" → \"\(normalized)\"")
         }
         return normalized
     }
